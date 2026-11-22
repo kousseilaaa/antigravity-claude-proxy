@@ -90,6 +90,11 @@ export class BaseStrategy {
             }
         }
 
+        // Skip accounts whose known quota catalog does not include this model
+        if (modelId && account.quota?.models && Object.keys(account.quota.models).length > 0 && !Object.prototype.hasOwnProperty.call(account.quota.models, modelId)) {
+            return false;
+        }
+
         return true;
     }
 

@@ -23,6 +23,9 @@ export function isAllRateLimited(accounts, modelId) {
     return accounts.every(acc => {
         if (acc.isInvalid) return true; // Invalid accounts count as unavailable
         if (acc.enabled === false) return true; // Disabled accounts count as unavailable
+        if (acc.quota?.models && Object.keys(acc.quota.models).length > 0 && !Object.prototype.hasOwnProperty.call(acc.quota.models, modelId)) {
+            return true; // Account does not have access to this model
+        }
         const modelLimits = acc.modelRateLimits || {};
         const limit = modelLimits[modelId];
         return limit && limit.isRateLimited && limit.resetTime > Date.now();
@@ -43,6 +46,9 @@ export function getAvailableAccounts(accounts, modelId = null) {
         // WebUI: Skip disabled accounts
         if (acc.enabled === false) return false;
 
+        if (modelId && acc.quota?.models && Object.keys(acc.quota.models).length > 0 && !Object.prototype.hasOwnProperty.call(acc.quota.models, modelId)) {
+            return false;
+        }
         if (modelId && acc.modelRateLimits && acc.modelRateLimits[modelId]) {
             const limit = acc.modelRateLimits[modelId];
             if (limit.isRateLimited && limit.resetTime > Date.now()) {

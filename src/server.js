@@ -641,8 +641,8 @@ app.post('/refresh-token', async (req, res) => {
 app.get('/v1/models', async (req, res) => {
     try {
         await ensureInitialized();
-        const { account } = accountManager.selectAccount();
-        if (!account) {
+        const availableAccounts = accountManager.getAvailableAccounts();
+        if (availableAccounts.length === 0) {
             return res.status(503).json({
                 type: 'error',
                 error: {
@@ -651,9 +651,29 @@ app.get('/v1/models', async (req, res) => {
                 }
             });
         }
-        const token = await accountManager.getTokenForAccount(account);
-        const models = await listModels(token);
-        res.json(models);
+        const results = await Promise.allSettled(
+            availableAccounts.map(async (account) => {
+                const token = await accountManager.getTokenForAccount(account);
+                return listModels(token);
+            })
+        );
+        const mergedById = new Map();
+        let lastError = null;
+        for (const result of results) {
+            if (result.status === 'fulfilled' && Array.isArray(result.value?.data)) {
+                for (const model of result.value.data) {
+                    if (!mergedById.has(model.id)) {
+                        mergedById.set(model.id, model);
+                    }
+                }
+            } else if (result.status === 'rejected') {
+                lastError = result.reason;
+            }
+        }
+        if (mergedById.size === 0 && lastError) {
+            throw lastError;
+        }
+        res.json({ object: 'list', data: Array.from(mergedById.values()) });
     } catch (error) {
         logger.error('[API] Error listing models:', error);
         res.status(500).json({
@@ -722,7 +742,8 @@ app.post('/v1/messages', async (req, res) => {
 
         const modelId = requestedModel;
 
-        const { account: validationAccount } = accountManager.selectAccount();
+        const { account: modelAccount } = accountManager.selectAccount(modelId);
+        const validationAccount = modelAccount || accountManager.selectAccount().account;
         if (validationAccount) {
             const token = await accountManager.getTokenForAccount(validationAccount);
             const projectId = validationAccount.subscription?.projectId || null;

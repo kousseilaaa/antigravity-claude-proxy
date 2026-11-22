@@ -20,6 +20,7 @@ import { recordModels } from './model-registry.js';
 // Model validation cache
 const modelCache = {
     validModels: new Set(),
+    fetchedTokens: new Set(),
     lastFetched: 0,
     fetchPromise: null  // Prevents concurrent fetches
 };
@@ -82,8 +83,16 @@ export async function listModels(token) {
     // isValidModel() (the actual request-time gate) must keep accepting an
     // id a client already has configured even if it's hidden from the
     // listing below.
-    modelCache.validModels = new Set(supportedEntries.map(([modelId]) => modelId));
-    modelCache.lastFetched = Date.now();
+    const now = Date.now();
+    if (now - modelCache.lastFetched >= MODEL_VALIDATION_CACHE_TTL_MS) {
+        modelCache.validModels = new Set();
+        modelCache.fetchedTokens = new Set();
+    }
+    for (const [modelId] of supportedEntries) {
+        modelCache.validModels.add(modelId);
+    }
+    if (token) modelCache.fetchedTokens.add(token);
+    modelCache.lastFetched = now;
 
     const modelList = supportedEntries
         .filter(([modelId]) => !isOldGemini(modelId) && !isDisabledPlaceholder(modelId))
@@ -314,18 +323,21 @@ export async function getSubscriptionTier(token) {
  * @param {string} [projectId] - Optional project ID
  * @returns {Promise<void>}
  */
-async function populateModelCache(token, projectId = null) {
+async function populateModelCache(token, projectId = null, forceForToken = false) {
     const now = Date.now();
+    const isFresh = modelCache.validModels.size > 0 && (now - modelCache.lastFetched) < MODEL_VALIDATION_CACHE_TTL_MS;
 
-    // Check if cache is fresh
-    if (modelCache.validModels.size > 0 && (now - modelCache.lastFetched) < MODEL_VALIDATION_CACHE_TTL_MS) {
+    // Check if cache is fresh (and already includes this token if forced)
+    if (isFresh && (!forceForToken || modelCache.fetchedTokens.has(token))) {
         return;
     }
 
     // If already fetching, wait for it
     if (modelCache.fetchPromise) {
         await modelCache.fetchPromise;
-        return;
+        if (!forceForToken || modelCache.fetchedTokens.has(token)) {
+            return;
+        }
     }
 
     // Start fetch
@@ -335,9 +347,17 @@ async function populateModelCache(token, projectId = null) {
             if (data && data.models) {
                 recordModels(data);
                 const validIds = Object.keys(data.models).filter(modelId => isSupportedModel(modelId));
-                modelCache.validModels = new Set(validIds);
-                modelCache.lastFetched = Date.now();
-                logger.debug(`[CloudCode] Model cache populated with ${validIds.length} models`);
+                const fetchTime = Date.now();
+                if (fetchTime - modelCache.lastFetched >= MODEL_VALIDATION_CACHE_TTL_MS) {
+                    modelCache.validModels = new Set();
+                    modelCache.fetchedTokens = new Set();
+                }
+                for (const id of validIds) {
+                    modelCache.validModels.add(id);
+                }
+                if (token) modelCache.fetchedTokens.add(token);
+                modelCache.lastFetched = fetchTime;
+                logger.debug(`[CloudCode] Model cache populated with ${modelCache.validModels.size} models`);
             }
         } catch (error) {
             logger.warn(`[CloudCode] Failed to populate model cache: ${error.message}`);
@@ -361,7 +381,17 @@ async function populateModelCache(token, projectId = null) {
 export async function isValidModel(modelId, token, projectId = null) {
     try {
         // Populate cache if needed
-        await populateModelCache(token, projectId);
+        await populateModelCache(token, projectId, false);
+
+        if (modelCache.validModels.has(modelId)) {
+            return true;
+        }
+
+        // Cache may have been populated by an account with a smaller model catalog;
+        // refresh once with this account's token and union into the cache.
+        if (token && !modelCache.fetchedTokens.has(token)) {
+            await populateModelCache(token, projectId, true);
+        }
 
         // If cache is populated, validate against it
         if (modelCache.validModels.size > 0) {
