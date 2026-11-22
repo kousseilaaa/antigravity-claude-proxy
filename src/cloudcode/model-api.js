@@ -406,3 +406,107 @@ export async function isValidModel(modelId, token, projectId = null) {
         return true;
     }
 }
+
+const EFFORT_SUFFIX_RE = /^(.*)-(low|medium|high|xhigh)$/;
+
+/**
+ * Return the current set of cached valid model IDs.
+ * @returns {Set<string>}
+ */
+export function getCachedModelIds() {
+    return modelCache.validModels;
+}
+
+/**
+ * Add canonical effort-routed aliases (e.g. "gemini-4-neon", "claude-opus-5-5")
+ * to a merged /v1/models map whenever at least 2 effort variants exist.
+ * @param {Map<string, Object>} mergedById
+ */
+export function addCanonicalEffortAliases(mergedById) {
+    const groups = new Map();
+    for (const [id, model] of mergedById.entries()) {
+        const match = id.match(EFFORT_SUFFIX_RE);
+        if (!match) continue;
+        const [, base, suffix] = match;
+        if (!groups.has(base)) groups.set(base, new Map());
+        groups.get(base).set(suffix, model);
+    }
+
+    for (const [base, variants] of groups.entries()) {
+        if (variants.size < 2 || mergedById.has(base)) continue;
+        const sample = variants.get('medium') || variants.get('high') || variants.get('low') || variants.get('xhigh');
+        const baseDesc = (sample?.description || base).replace(/\s*\((low|medium|high|xhigh)\)\s*$/i, '').trim();
+        mergedById.set(base, {
+            id: base,
+            object: 'model',
+            created: sample?.created || Math.floor(Date.now() / 1000),
+            owned_by: sample?.owned_by || 'anthropic',
+            description: `${baseDesc} (Auto Effort)`
+        });
+    }
+}
+
+/**
+ * Map Anthropic thinking / output_config.effort parameters to a preferred
+ * ordered list of backend effort suffixes.
+ * @param {Object} [thinking]
+ * @param {Object} [outputConfig]
+ * @returns {string[]}
+ */
+function getEffortPreference(thinking, outputConfig) {
+    const explicitEffort = typeof outputConfig?.effort === 'string'
+        ? outputConfig.effort.toLowerCase()
+        : null;
+
+    if (explicitEffort === 'low' || explicitEffort === 'minimal') {
+        return ['low', 'medium', 'high', 'xhigh'];
+    }
+    if (explicitEffort === 'medium') {
+        return ['medium', 'high', 'low', 'xhigh'];
+    }
+    if (explicitEffort === 'high') {
+        return ['high', 'xhigh', 'medium', 'low'];
+    }
+    if (explicitEffort === 'max' || explicitEffort === 'xhigh') {
+        return ['xhigh', 'high', 'medium', 'low'];
+    }
+
+    if (thinking?.type === 'disabled') {
+        return ['low', 'medium', 'high', 'xhigh'];
+    }
+
+    const budget = thinking?.budget_tokens;
+    if (typeof budget === 'number') {
+        if (budget <= 2048) return ['low', 'medium', 'high', 'xhigh'];
+        if (budget <= 8192) return ['medium', 'high', 'low', 'xhigh'];
+        if (budget <= 16384) return ['high', 'xhigh', 'medium', 'low'];
+        return ['xhigh', 'high', 'medium', 'low'];
+    }
+
+    return ['medium', 'high', 'low', 'xhigh'];
+}
+
+/**
+ * Resolve a canonical effort alias (e.g. "gemini-4-neon") to the matching
+ * concrete backend model (e.g. "gemini-4-neon-high") based on thinking effort.
+ * Explicit concrete model IDs are returned unchanged.
+ * @param {string} modelId
+ * @param {Object} [thinking]
+ * @param {Object} [outputConfig]
+ * @param {Set<string>} availableIds
+ * @returns {string}
+ */
+export function resolveEffortModel(modelId, thinking, outputConfig, availableIds) {
+    if (!modelId || !availableIds || availableIds.size === 0) return modelId;
+    if (availableIds.has(modelId)) return modelId;
+
+    const preference = getEffortPreference(thinking, outputConfig);
+    for (const suffix of preference) {
+        const candidate = `${modelId}-${suffix}`;
+        if (availableIds.has(candidate)) {
+            return candidate;
+        }
+    }
+
+    return modelId;
+}

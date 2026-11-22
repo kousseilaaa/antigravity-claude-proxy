@@ -8,7 +8,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { sendMessage, sendMessageStream, listModels, getModelQuotas, getSubscriptionTier, isValidModel } from './cloudcode/index.js';
+import { sendMessage, sendMessageStream, listModels, getModelQuotas, getSubscriptionTier, isValidModel, getCachedModelIds, addCanonicalEffortAliases, resolveEffortModel } from './cloudcode/index.js';
 import { mountWebUI } from './webui/index.js';
 import { config } from './config.js';
 
@@ -673,6 +673,7 @@ app.get('/v1/models', async (req, res) => {
         if (mergedById.size === 0 && lastError) {
             throw lastError;
         }
+        addCanonicalEffortAliases(mergedById);
         res.json({ object: 'list', data: Array.from(mergedById.values()) });
     } catch (error) {
         logger.error('[API] Error listing models:', error);
@@ -722,6 +723,7 @@ app.post('/v1/messages', async (req, res) => {
             tools,
             tool_choice,
             thinking,
+            output_config,
             top_p,
             top_k,
             temperature
@@ -740,7 +742,18 @@ app.post('/v1/messages', async (req, res) => {
             requestedModel = targetModel;
         }
 
-        const modelId = requestedModel;
+        const knownModels = new Set(getCachedModelIds());
+        for (const acc of accountManager.getAvailableAccounts()) {
+            if (acc.quota?.models) {
+                for (const id of Object.keys(acc.quota.models)) {
+                    knownModels.add(id);
+                }
+            }
+        }
+        const modelId = resolveEffortModel(requestedModel, thinking, output_config, knownModels);
+        if (modelId !== requestedModel) {
+            logger.info(`[Server] Resolved effort alias ${requestedModel} -> ${modelId}`);
+        }
 
         const { account: modelAccount } = accountManager.selectAccount(modelId);
         const validationAccount = modelAccount || accountManager.selectAccount().account;
