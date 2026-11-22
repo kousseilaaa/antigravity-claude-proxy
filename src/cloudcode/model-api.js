@@ -436,6 +436,9 @@ export function addCanonicalEffortAliases(mergedById) {
         if (variants.size < 2 || mergedById.has(base)) continue;
         const sample = variants.get('medium') || variants.get('high') || variants.get('low') || variants.get('xhigh');
         const baseDesc = (sample?.description || base).replace(/\s*\((low|medium|high|xhigh)\)\s*$/i, '').trim();
+        for (const suffix of variants.keys()) {
+            mergedById.delete(`${base}-${suffix}`);
+        }
         mergedById.set(base, {
             id: base,
             object: 'model',
