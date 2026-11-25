@@ -267,65 +267,81 @@
 
     <!-- Add Account Modal -->
     <dialog id="add_account_modal" class="modal" x-data="addAccountModal">
-        <div class="modal-box max-w-lg w-full bg-space-900 border border-space-border text-gray-300 p-6">
-            <h3 class="font-semibold text-lg text-white mb-3" x-text="$store.global.t('addAccount')">Add New Account</h3>
+        <div class="modal-box max-w-2xl w-full bg-space-900 border border-space-border text-gray-300 p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="font-semibold text-lg text-white" x-text="$store.global.t('addAccount')">Add Provider Account</h3>
+                <span class="text-[11px] font-mono text-gray-500 uppercase tracking-wider">Multi-Provider</span>
+            </div>
 
-            <div class="flex flex-col gap-4">
-                <p class="text-sm text-gray-400 leading-relaxed" x-text="$store.global.t('connectGoogleDesc')">Connect a Google
-                    Workspace account to increase your API quota limit.
-                    The account will be used to proxy Claude requests via Antigravity.</p>
-
-                <button class="btn btn-primary flex items-center justify-center gap-3 h-11" @click="addAccountWeb">
-                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-                        <path
-                            d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z">
-                        </path>
-                        <path
-                            d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z">
-                        </path>
-                        <path
-                            d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z">
-                        </path>
-                        <path
-                            d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z">
-                        </path>
+            <!-- Category Tabs: OAuth Accounts vs API Keys -->
+            <div class="grid grid-cols-2 gap-2 p-1 bg-space-950 rounded-lg border border-space-border mb-4">
+                <button type="button"
+                    class="py-2 px-3 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-2"
+                    :class="activeCategory === 'oauth' ? 'bg-neon-purple/20 text-white border border-neon-purple/50' : 'text-gray-400 hover:text-white'"
+                    @click="selectCategory('oauth')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                     </svg>
-                    <span x-text="$store.global.t('connectGoogle')">Connect Google Account</span>
+                    <span>OAuth Accounts</span>
                 </button>
+                <button type="button"
+                    class="py-2 px-3 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-2"
+                    :class="activeCategory === 'api-key' ? 'bg-neon-purple/20 text-white border border-neon-purple/50' : 'text-gray-400 hover:text-white'"
+                    @click="selectCategory('api-key')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                    </svg>
+                    <span>API Keys &amp; Custom</span>
+                </button>
+            </div>
 
-                <div class="text-center mt-2">
-                    <p class="text-xs text-gray-500 mb-2" x-text="$store.global.t('or')">or</p>
-                    
-                    <!-- Manual Mode (collapsible) -->
-                    <details class="group mb-2" @toggle="initManualAuth($event)">
+            <!-- OAUTH PROVIDERS TAB -->
+            <div x-show="activeCategory === 'oauth'" class="flex flex-col gap-4">
+                <!-- OAuth Provider Selector Pills -->
+                <div class="grid grid-cols-3 gap-2">
+                    <template x-for="p in oauthProviders" :key="p.id">
+                        <button type="button"
+                            class="p-2.5 rounded-lg border text-left transition-all"
+                            :class="selectedProviderId === p.id ? 'bg-space-850 border-neon-purple text-white' : 'bg-space-950/60 border-space-border text-gray-400 hover:text-white hover:border-gray-600'"
+                            @click="selectProvider(p.id)">
+                            <div class="text-xs font-semibold truncate" x-text="p.shortName"></div>
+                            <div class="text-[10px] text-gray-500 truncate mt-0.5" x-text="p.authType === 'device-code' ? 'Device Code' : 'OAuth PKCE'"></div>
+                        </button>
+                    </template>
+                </div>
+
+                <!-- 1. Google Antigravity OAuth -->
+                <div x-show="selectedProviderId === 'antigravity'" class="flex flex-col gap-3">
+                    <p class="text-xs text-gray-400 leading-relaxed" x-text="$store.global.t('connectGoogleDesc')">
+                        Connect a Google account to proxy Claude &amp; Gemini models via Antigravity Cloud Code.
+                    </p>
+                    <button type="button" class="btn btn-primary flex items-center justify-center gap-3 h-11" @click="addAccountWeb">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"></path>
+                            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"></path>
+                            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"></path>
+                            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"></path>
+                        </svg>
+                        <span x-text="$store.global.t('connectGoogle')">Connect Google Account</span>
+                    </button>
+
+                    <details class="group mt-1" @toggle="initManualAuth($event)">
                         <summary class="text-xs text-gray-400 hover:text-white cursor-pointer transition-colors inline-flex items-center gap-1">
                             <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                             </svg>
-                            <span x-text="$store.global.t('manualMode')">Manual Mode</span>
+                            <span x-text="$store.global.t('manualMode')">Manual Mode (Headless / Paste Callback)</span>
                         </summary>
-                        <div class="mt-3 p-3 bg-space-950 rounded-md border border-space-border text-xs">
+                        <div class="mt-2 p-3 bg-space-950 rounded-md border border-space-border text-xs">
                             <template x-if="authUrl">
-                                <div>
-                                    <div class="flex items-center gap-2 mb-2">
-                                        <input type="text" readonly :value="authUrl" 
-                                               class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
-                                        <button class="btn btn-xs btn-ghost text-gray-400 hover:text-white" @click="copyLink" aria-label="Copy link" :title="$store.global.t('linkCopied')">
-                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-                                            </svg>
-                                        </button>
+                                <div class="flex flex-col gap-2">
+                                    <div class="flex items-center gap-2">
+                                        <input type="text" readonly :value="authUrl" class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
+                                        <button type="button" class="btn btn-xs btn-ghost text-gray-400 hover:text-white" @click="copyLink">Copy</button>
                                     </div>
                                     <div class="flex items-center gap-2">
-                                        <input type="text" x-model="callbackInput" 
-                                               :placeholder="$store.global.t('pasteCallbackPlaceholder')"
-                                               class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
-                                        <button class="btn btn-xs btn-success" 
-                                                @click="completeManualAuth" 
-                                                :disabled="!callbackInput || submitting"
-                                                :class="{ 'loading': submitting }">
-                                            <span x-text="$store.global.t('completeAuth')">OK</span>
-                                        </button>
+                                        <input type="text" x-model="callbackInput" :placeholder="$store.global.t('pasteCallbackPlaceholder')" class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
+                                        <button type="button" class="btn btn-xs btn-success" @click="completeManualAuth" :disabled="!callbackInput || submitting">OK</button>
                                     </div>
                                 </div>
                             </template>
@@ -334,26 +350,147 @@
                             </template>
                         </div>
                     </details>
+                </div>
 
-                    <!-- CLI Command -->
-                    <details class="group">
-                        <summary class="text-xs text-gray-400 hover:text-white cursor-pointer transition-colors inline-flex items-center gap-1">
-                            <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                            </svg>
-                            <span x-text="$store.global.t('useCliCommand')">Use CLI Command</span>
-                        </summary>
-                        <div class="mt-3 p-3 bg-space-950 rounded-md border border-space-border font-mono text-xs text-gray-300">
+                <!-- 2. OpenAI Codex (ChatGPT) OAuth -->
+                <div x-show="selectedProviderId === 'openai-codex'" class="flex flex-col gap-3">
+                    <p class="text-xs text-gray-400 leading-relaxed">
+                        Sign in with your ChatGPT Plus, Pro, or Team account via OpenAI OAuth PKCE to use GPT-5.x Codex, o3, and o4-mini models through this proxy.
+                    </p>
+                    <button type="button"
+                        class="btn bg-emerald-600 hover:bg-emerald-500 border-none text-white flex items-center justify-center gap-2 h-11"
+                        @click="startCodexOAuth"
+                        :disabled="submitting">
+                        <span x-text="codexPolling ? 'Waiting for OpenAI login...' : 'Connect OpenAI / ChatGPT Account'"></span>
+                    </button>
+
+                    <template x-if="codexAuthUrl">
+                        <div class="p-3 bg-space-950 rounded-md border border-space-border text-xs flex flex-col gap-2">
+                            <div class="text-gray-400">If auto-redirect fails, copy the URL or paste the localhost:1455 callback URL below:</div>
                             <div class="flex items-center gap-2">
-                                <span class="text-gray-600">$</span>
-                                <code>npm run accounts:add</code>
+                                <input type="text" readonly :value="codexAuthUrl" class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
+                                <button type="button" class="btn btn-xs btn-ghost text-gray-400 hover:text-white" @click="copyText(codexAuthUrl, 'OpenAI OAuth URL copied')">Copy</button>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <input type="text" x-model="codexCallbackInput" placeholder="http://localhost:1455/auth/callback?code=..." class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
+                                <button type="button" class="btn btn-xs btn-success" @click="completeCodexManualAuth" :disabled="!codexCallbackInput || submitting">Complete</button>
                             </div>
                         </div>
-                    </details>
+                    </template>
+                </div>
+
+                <!-- 3. GitHub Copilot Device Flow -->
+                <div x-show="selectedProviderId === 'github-copilot'" class="flex flex-col gap-3">
+                    <p class="text-xs text-gray-400 leading-relaxed">
+                        Connect your GitHub Copilot subscription using GitHub's Device Code flow. Works on any machine including headless servers.
+                    </p>
+                    <button type="button"
+                        x-show="!copilotUserCode"
+                        class="btn bg-sky-600 hover:bg-sky-500 border-none text-white h-11"
+                        @click="startCopilotAuth"
+                        :disabled="submitting">
+                        Start GitHub Copilot Login
+                    </button>
+
+                    <template x-if="copilotUserCode">
+                        <div class="p-4 bg-space-950 rounded-lg border border-sky-500/40 flex flex-col items-center gap-3 text-center">
+                            <div class="text-xs text-gray-400">1. Copy this verification code:</div>
+                            <div class="flex items-center gap-2">
+                                <code class="text-2xl font-mono font-bold tracking-widest text-sky-400 bg-space-900 px-4 py-2 rounded border border-space-border" x-text="copilotUserCode"></code>
+                                <button type="button" class="btn btn-sm btn-ghost text-gray-300" @click="copyText(copilotUserCode, 'Code copied!')">Copy</button>
+                            </div>
+                            <div class="text-xs text-gray-400">2. Authorize at GitHub:</div>
+                            <a :href="copilotVerificationUri" target="_blank" rel="noopener noreferrer"
+                                class="btn btn-sm bg-sky-600 hover:bg-sky-500 border-none text-white"
+                                x-text="'Open ' + copilotVerificationUri"></a>
+                            <div class="text-xs text-sky-300 flex items-center gap-2 mt-1" x-show="copilotStatusMsg">
+                                <span x-show="copilotPolling" class="loading loading-spinner loading-xs"></span>
+                                <span x-text="copilotStatusMsg"></span>
+                            </div>
+                        </div>
+                    </template>
                 </div>
             </div>
 
-            <div class="modal-action mt-6">
+            <!-- API KEYS & CUSTOM PROVIDERS TAB -->
+            <div x-show="activeCategory === 'api-key'" class="flex flex-col gap-3">
+                <!-- Provider Grid -->
+                <div class="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+                    <template x-for="p in apiKeyProviders" :key="p.id">
+                        <button type="button"
+                            class="px-2 py-2 rounded-md border text-center text-xs font-medium transition-all truncate"
+                            :class="selectedProviderId === p.id ? 'bg-neon-purple/20 border-neon-purple text-white' : 'bg-space-950/60 border-space-border text-gray-400 hover:text-white'"
+                            @click="selectProvider(p.id)"
+                            x-text="p.shortName">
+                        </button>
+                    </template>
+                </div>
+
+                <p class="text-xs text-gray-400" x-text="selectedProvider?.description || ''"></p>
+
+                <div class="flex flex-col gap-2.5">
+                    <div>
+                        <label class="text-[11px] text-gray-400 block mb-1">API Key</label>
+                        <input type="password" x-model="apiKeyForm.apiKey"
+                            :placeholder="selectedProvider?.keyPlaceholder || 'sk-...'"
+                            class="input input-sm input-bordered w-full bg-space-950 border-space-border text-gray-200 font-mono">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <div>
+                            <label class="text-[11px] text-gray-400 block mb-1">Account Label (optional)</label>
+                            <input type="text" x-model="apiKeyForm.label"
+                                placeholder="e.g. personal, work"
+                                class="input input-sm input-bordered w-full bg-space-950 border-space-border text-gray-200">
+                        </div>
+                        <div>
+                            <label class="text-[11px] text-gray-400 block mb-1">Base URL</label>
+                            <input type="text" x-model="apiKeyForm.baseUrl"
+                                :placeholder="selectedProvider?.defaultBaseUrl || 'https://api.example.com/v1'"
+                                class="input input-sm input-bordered w-full bg-space-950 border-space-border text-gray-200 font-mono">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2.5" x-show="selectedProvider?.allowProtocolChoice">
+                        <div>
+                            <label class="text-[11px] text-gray-400 block mb-1">API Protocol</label>
+                            <select x-model="apiKeyForm.protocol" class="select select-sm select-bordered w-full bg-space-950 border-space-border text-gray-200">
+                                <option value="openai-chat">OpenAI Chat Completions (/chat/completions)</option>
+                                <option value="anthropic">Anthropic Messages (/v1/messages)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-[11px] text-gray-400 block mb-1">Models (comma-separated, optional)</label>
+                            <input type="text" x-model="apiKeyForm.customModels"
+                                placeholder="llama3.2, qwen2.5-coder"
+                                class="input input-sm input-bordered w-full bg-space-950 border-space-border text-gray-200 font-mono">
+                        </div>
+                    </div>
+
+                    <div x-show="!selectedProvider?.allowProtocolChoice">
+                        <label class="text-[11px] text-gray-400 block mb-1">Extra Model IDs (comma-separated, optional)</label>
+                        <input type="text" x-model="apiKeyForm.customModels"
+                            placeholder="Leave empty to auto-discover models"
+                            class="input input-sm input-bordered w-full bg-space-950 border-space-border text-gray-200 font-mono">
+                    </div>
+
+                    <label class="flex items-center gap-2 text-xs text-gray-400 cursor-pointer mt-1">
+                        <input type="checkbox" x-model="apiKeyForm.testBeforeSave" class="checkbox checkbox-xs checkbox-primary">
+                        <span>Verify connection before saving</span>
+                    </label>
+
+                    <button type="button"
+                        class="btn btn-primary btn-sm h-10 mt-1"
+                        @click="submitApiKeyAccount"
+                        :disabled="submitting"
+                        :class="{ 'loading': submitting }">
+                        <span x-text="'Add ' + (selectedProvider?.shortName || 'Provider') + ' Account'"></span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="modal-action mt-5 flex items-center justify-between">
+                <span class="text-[11px] font-mono text-gray-500">CLI: npm run accounts:add</span>
                 <form method="dialog">
                     <button type="submit" class="btn btn-ghost btn-sm text-gray-400 hover:text-white hover:bg-space-800" @click="resetState()" x-text="$store.global.t('close')">Close</button>
                 </form>

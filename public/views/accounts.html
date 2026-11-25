@@ -136,10 +136,25 @@
                             </label>
                         </td>
                         <td class="py-4">
-                            <div class="tooltip tooltip-right" :data-tip="Redact.email(acc.email)">
-                                <span class="font-mono text-sm text-gray-300 truncate max-w-[320px] inline-block cursor-help group-hover:text-white transition-colors"
-                                      x-text="formatEmail(Redact.email(acc.email))">
+                            <div class="flex items-center gap-2">
+                                <span class="px-1.5 py-0.5 text-[10px] font-mono uppercase rounded border"
+                                      :class="{
+                                          'bg-purple-500/15 text-purple-300 border-purple-500/30': !acc.provider || acc.provider === 'antigravity',
+                                          'bg-emerald-500/15 text-emerald-300 border-emerald-500/30': acc.provider === 'openai-codex' || acc.provider === 'openai',
+                                          'bg-sky-500/15 text-sky-300 border-sky-500/30': acc.provider === 'github-copilot' || acc.provider === 'deepseek' || acc.provider === 'google-ai',
+                                          'bg-cyan-500/15 text-cyan-300 border-cyan-500/30': acc.provider === 'opencode',
+                                          'bg-amber-500/15 text-amber-300 border-amber-500/30': acc.provider === 'anthropic' || acc.provider === 'mistral',
+                                          'bg-indigo-500/15 text-indigo-300 border-indigo-500/30': acc.provider === 'openrouter',
+                                          'bg-orange-500/15 text-orange-300 border-orange-500/30': acc.provider === 'groq',
+                                          'bg-gray-500/15 text-gray-300 border-gray-500/30': acc.provider === 'xai' || acc.provider === 'custom'
+                                      }"
+                                      x-text="acc.provider || 'antigravity'">
                                 </span>
+                                <div class="tooltip tooltip-right" :data-tip="Redact.email(acc.email)">
+                                    <span class="font-mono text-sm text-gray-300 truncate max-w-[280px] inline-block cursor-help group-hover:text-white transition-colors"
+                                          x-text="formatEmail(Redact.email(acc.email))">
+                                    </span>
+                                </div>
                             </div>
                         </td>
                         <td class="py-4">

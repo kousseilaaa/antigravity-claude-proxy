@@ -33,6 +33,8 @@ window.Components.accountManager = () => ({
         const query = this.searchQuery.toLowerCase().trim();
         return accounts.filter(acc => {
             return acc.email.toLowerCase().includes(query) ||
+                   (acc.provider && acc.provider.toLowerCase().includes(query)) ||
+                   (acc.label && acc.label.toLowerCase().includes(query)) ||
                    (acc.projectId && acc.projectId.toLowerCase().includes(query)) ||
                    (acc.source && acc.source.toLowerCase().includes(query));
         });

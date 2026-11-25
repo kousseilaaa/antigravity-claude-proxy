@@ -21,6 +21,16 @@ import { clearAllSignatureCaches } from './format/signature-cache.js';
 import { formatDuration } from './utils/helpers.js';
 import { logger } from './utils/logger.js';
 import usageStats from './modules/usage-stats.js';
+import {
+    DEFAULT_PROVIDER,
+    getProvider,
+    getAccountProvider,
+    isAntigravityAccount,
+    resolveProviderForModel,
+    listProviderModels,
+    sendProviderMessage,
+    streamProviderMessage
+} from './providers/index.js';
 
 // Parse fallback flag directly from command line args to avoid circular dependency
 const args = process.argv.slice(2);
@@ -360,6 +370,32 @@ app.get('/account-limits', async (req, res) => {
                 }
 
                 try {
+                    // Non-Antigravity provider accounts (OpenAI Codex, GitHub Copilot, Anthropic, OpenCode, OpenRouter, etc.)
+                    if (!isAntigravityAccount(account)) {
+                        const providerId = getAccountProvider(account);
+                        const provider = getProvider(providerId);
+                        const providerModels = await listProviderModels(account, accountManager);
+                        const quotas = {};
+                        for (const m of providerModels) {
+                            quotas[m.id] = { remainingFraction: 1, resetTime: null };
+                        }
+                        account.subscription = {
+                            tier: provider?.shortName?.toLowerCase() || providerId,
+                            projectId: null,
+                            detectedAt: Date.now()
+                        };
+                        account.quota = {
+                            models: quotas,
+                            lastChecked: Date.now()
+                        };
+                        return {
+                            email: account.email,
+                            status: 'ok',
+                            subscription: account.subscription,
+                            models: quotas
+                        };
+                    }
+
                     const token = await accountManager.getTokenForAccount(account);
 
                     const subscription = await getSubscriptionTier(token);
@@ -561,6 +597,11 @@ app.get('/account-limits', async (req, res) => {
                 const metadata = accountMetadataMap.get(acc.email) || {};
                 return {
                     email: acc.email,
+                    provider: metadata.provider || DEFAULT_PROVIDER,
+                    label: metadata.label || null,
+                    baseUrl: metadata.baseUrl || null,
+                    protocol: metadata.protocol || null,
+                    customModels: metadata.customModels || [],
                     status: acc.status,
                     error: acc.error || null,
                     // Include metadata from AccountManager (WebUI needs these)
@@ -572,7 +613,6 @@ app.get('/account-limits', async (req, res) => {
                     verifyUrl: metadata.verifyUrl || null,
                     lastUsed: metadata.lastUsed || null,
                     modelRateLimits: metadata.modelRateLimits || {},
-                    // Quota threshold settings
                     quotaThreshold: metadata.quotaThreshold,
                     modelQuotaThresholds: metadata.modelQuotaThresholds || {},
                     // Subscription data (new)
@@ -653,17 +693,31 @@ app.get('/v1/models', async (req, res) => {
         }
         const results = await Promise.allSettled(
             availableAccounts.map(async (account) => {
+                if (!isAntigravityAccount(account)) {
+                    const models = await listProviderModels(account, accountManager);
+                    return { object: 'list', data: models, providerId: getAccountProvider(account) };
+                }
                 const token = await accountManager.getTokenForAccount(account);
-                return listModels(token);
+                const list = await listModels(token);
+                return { ...list, providerId: DEFAULT_PROVIDER };
             })
         );
         const mergedById = new Map();
         let lastError = null;
+        let hasAntigravityModels = false;
         for (const result of results) {
             if (result.status === 'fulfilled' && Array.isArray(result.value?.data)) {
+                const pid = result.value.providerId || DEFAULT_PROVIDER;
+                if (pid === DEFAULT_PROVIDER) hasAntigravityModels = true;
                 for (const model of result.value.data) {
                     if (!mergedById.has(model.id)) {
-                        mergedById.set(model.id, model);
+                        mergedById.set(model.id, { ...model, provider: model.provider || pid });
+                    } else if (pid !== DEFAULT_PROVIDER) {
+                        // Expose provider-prefixed alias when raw model ID collides with another provider
+                        const prefixedId = `${pid}/${model.id}`;
+                        if (!mergedById.has(prefixedId)) {
+                            mergedById.set(prefixedId, { ...model, id: prefixedId, provider: pid });
+                        }
                     }
                 }
             } else if (result.status === 'rejected') {
@@ -673,7 +727,9 @@ app.get('/v1/models', async (req, res) => {
         if (mergedById.size === 0 && lastError) {
             throw lastError;
         }
-        addCanonicalEffortAliases(mergedById);
+        if (hasAntigravityModels) {
+            addCanonicalEffortAliases(mergedById);
+        }
         res.json({ object: 'list', data: Array.from(mergedById.values()) });
     } catch (error) {
         logger.error('[API] Error listing models:', error);
@@ -742,36 +798,42 @@ app.post('/v1/messages', async (req, res) => {
             requestedModel = targetModel;
         }
 
-        const knownModels = new Set(getCachedModelIds());
-        for (const acc of accountManager.getAvailableAccounts()) {
-            if (acc.quota?.models) {
-                for (const id of Object.keys(acc.quota.models)) {
-                    knownModels.add(id);
+        const allAvailableAccounts = accountManager.getAvailableAccounts();
+        const resolved = resolveProviderForModel(requestedModel, allAvailableAccounts);
+        const targetProviderId = resolved.providerId;
+        let modelId = resolved.modelId;
+
+        if (targetProviderId === DEFAULT_PROVIDER) {
+            const knownModels = new Set(getCachedModelIds());
+            for (const acc of accountManager.getAvailableAccounts(null, DEFAULT_PROVIDER)) {
+                if (acc.quota?.models) {
+                    for (const id of Object.keys(acc.quota.models)) {
+                        knownModels.add(id);
+                    }
                 }
             }
-        }
-        const modelId = resolveEffortModel(requestedModel, thinking, output_config, knownModels);
-        if (modelId !== requestedModel) {
-            logger.info(`[Server] Resolved effort alias ${requestedModel} -> ${modelId}`);
-        }
-
-        const { account: modelAccount } = accountManager.selectAccount(modelId);
-        const validationAccount = modelAccount || accountManager.selectAccount().account;
-        if (validationAccount) {
-            const token = await accountManager.getTokenForAccount(validationAccount);
-            const projectId = validationAccount.subscription?.projectId || null;
-            const valid = await isValidModel(modelId, token, projectId);
-
-            if (!valid) {
-                throw new Error(`invalid_request_error: Invalid model: ${modelId}. Use /v1/models to see available models.`);
+            modelId = resolveEffortModel(requestedModel, thinking, output_config, knownModels);
+            if (modelId !== requestedModel) {
+                logger.info(`[Server] Resolved effort alias ${requestedModel} -> ${modelId}`);
             }
-        }
 
-        // Optimistic Retry: If ALL accounts are rate-limited for this model, reset them to force a fresh check.
-        // If we have some available accounts, we try them first.
-        if (accountManager.isAllRateLimited(modelId)) {
-            logger.warn(`[Server] All accounts rate-limited for ${modelId}. Resetting state for optimistic retry.`);
-            accountManager.resetAllRateLimits();
+            const { account: modelAccount } = accountManager.selectAccount(modelId, { providerId: DEFAULT_PROVIDER });
+            const validationAccount = modelAccount || accountManager.selectAccount(null, { providerId: DEFAULT_PROVIDER }).account;
+            if (validationAccount) {
+                const token = await accountManager.getTokenForAccount(validationAccount);
+                const projectId = validationAccount.subscription?.projectId || null;
+                const valid = await isValidModel(modelId, token, projectId);
+
+                if (!valid) {
+                    throw new Error(`invalid_request_error: Invalid model: ${modelId}. Use /v1/models to see available models.`);
+                }
+            }
+
+            // Optimistic Retry: If ALL accounts are rate-limited for this model, reset them to force a fresh check.
+            if (accountManager.isAllRateLimited(modelId)) {
+                logger.warn(`[Server] All accounts rate-limited for ${modelId}. Resetting state for optimistic retry.`);
+                accountManager.resetAllRateLimits();
+            }
         }
 
         if (!messages || !Array.isArray(messages)) {
@@ -803,7 +865,7 @@ app.post('/v1/messages', async (req, res) => {
             temperature
         };
 
-        logger.info(`[API] Request for model: ${request.model}, stream: ${!!stream}`);
+        logger.info(`[API] Request for provider: ${targetProviderId}, model: ${request.model}, stream: ${!!stream}`);
 
         // Debug: Log message structure to diagnose tool_use/tool_result ordering
         if (logger.isDebugEnabled) {
@@ -822,7 +884,9 @@ app.post('/v1/messages', async (req, res) => {
             // to ensure we don't send a 200 OK if the upstream fails immediately (e.g. 429/503).
 
             try {
-                const generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED);
+                const generator = targetProviderId === DEFAULT_PROVIDER
+                    ? sendMessageStream(request, accountManager, FALLBACK_ENABLED)
+                    : streamProviderMessage(targetProviderId, modelId, request, accountManager);
                 
                 // BUFFERING STRATEGY:
                 // Pull the first event *before* sending headers. 
@@ -880,7 +944,9 @@ app.post('/v1/messages', async (req, res) => {
             }
 
         } else {
-            const response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
+            const response = targetProviderId === DEFAULT_PROVIDER
+                ? await sendMessage(request, accountManager, FALLBACK_ENABLED)
+                : await sendProviderMessage(targetProviderId, modelId, request, accountManager);
             usageStats.track(response?.model || modelId);
             res.json(response);
         }

@@ -28,6 +28,12 @@ export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
 
         const accounts = (config.accounts || []).map(acc => ({
             ...acc,
+            provider: acc.provider || 'antigravity',
+            label: acc.label || null,
+            baseUrl: acc.baseUrl || null,
+            protocol: acc.protocol || null,
+            customModels: Array.isArray(acc.customModels) ? acc.customModels : [],
+            extra: acc.extra || {},
             lastUsed: acc.lastUsed || null,
             enabled: acc.enabled !== false, // Default to true if not specified
             // Reset invalid flag on startup - give accounts a fresh chance
@@ -127,11 +133,19 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
         const config = {
             accounts: accounts.map(acc => ({
                 email: acc.email,
+                provider: acc.provider || 'antigravity',
+                label: acc.label || undefined,
                 source: acc.source,
                 enabled: acc.enabled !== false,
                 dbPath: acc.dbPath || null,
-                refreshToken: acc.source === 'oauth' ? acc.refreshToken : undefined,
-                apiKey: acc.source === 'manual' ? acc.apiKey : undefined,
+                refreshToken: acc.refreshToken || undefined,
+                accessToken: acc.accessToken || undefined,
+                expiresAt: acc.expiresAt || undefined,
+                apiKey: acc.apiKey || undefined,
+                baseUrl: acc.baseUrl || undefined,
+                protocol: acc.protocol || undefined,
+                customModels: Array.isArray(acc.customModels) && acc.customModels.length > 0 ? acc.customModels : undefined,
+                extra: acc.extra && Object.keys(acc.extra).length > 0 ? acc.extra : undefined,
                 projectId: acc.projectId || undefined,
                 addedAt: acc.addedAt || undefined,
                 isInvalid: acc.isInvalid || false,

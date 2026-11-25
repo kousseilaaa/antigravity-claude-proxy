@@ -18,6 +18,9 @@ import { logger } from '../utils/logger.js';
 import { isNetworkError, throttledFetch } from '../utils/helpers.js';
 import { onboardUser, getDefaultTierId } from './onboarding.js';
 import { parseTierId } from '../cloudcode/model-api.js';
+import { getAccountProvider } from '../providers/registry.js';
+import { refreshCodexAccessToken } from '../providers/auth/openai-codex-oauth.js';
+import { exchangeCopilotSessionToken } from '../providers/auth/github-copilot-oauth.js';
 
 // Track accounts currently fetching subscription to avoid duplicate calls
 const subscriptionFetchInProgress = new Set();
@@ -65,13 +68,96 @@ async function fetchAndSaveSubscription(token, account, onSave) {
  * @throws {Error} If token refresh fails
  */
 export async function getTokenForAccount(account, tokenCache, onInvalid, onSave) {
-    // Check cache first
-    const cached = tokenCache.get(account.email);
-    if (cached && (Date.now() - cached.extractedAt) < TOKEN_REFRESH_INTERVAL_MS) {
-        return cached.token;
+    const providerId = getAccountProvider(account);
+
+    // Direct API key providers don't need OAuth caching/refresh
+    if (providerId !== 'antigravity' && (account.source === 'api-key' || (account.source === 'manual' && account.apiKey))) {
+        return account.apiKey || '';
     }
 
-    // Get fresh token based on source
+    // Check cache first (respect per-token expiresAt if available, else default TTL)
+    const cached = tokenCache.get(account.email);
+    if (cached) {
+        if (cached.expiresAt) {
+            if (Date.now() < cached.expiresAt - 60000) {
+                return cached.token;
+            }
+        } else if ((Date.now() - cached.extractedAt) < TOKEN_REFRESH_INTERVAL_MS) {
+            return cached.token;
+        }
+    }
+
+    // OpenAI Codex (ChatGPT OAuth)
+    if (providerId === 'openai-codex') {
+        if (account.accessToken && account.expiresAt && Date.now() < account.expiresAt - 60000) {
+            tokenCache.set(account.email, {
+                token: account.accessToken,
+                extractedAt: Date.now(),
+                expiresAt: account.expiresAt
+            });
+            return account.accessToken;
+        }
+        if (!account.refreshToken) {
+            if (account.accessToken) return account.accessToken;
+            throw new Error(`AUTH_INVALID: ${account.email}: Missing OpenAI Codex refresh token`);
+        }
+        try {
+            const refreshed = await refreshCodexAccessToken(account.refreshToken);
+            account.accessToken = refreshed.accessToken;
+            account.refreshToken = refreshed.refreshToken;
+            account.expiresAt = refreshed.expiresAt;
+            account.extra = { ...(account.extra || {}), chatgptAccountId: refreshed.chatgptAccountId || account.extra?.chatgptAccountId };
+            if (account.isInvalid) {
+                account.isInvalid = false;
+                account.invalidReason = null;
+            }
+            if (onSave) await onSave();
+            tokenCache.set(account.email, {
+                token: refreshed.accessToken,
+                extractedAt: Date.now(),
+                expiresAt: refreshed.expiresAt
+            });
+            logger.success(`[AccountManager] Refreshed OpenAI Codex token for: ${account.email}`);
+            return refreshed.accessToken;
+        } catch (error) {
+            if (isNetworkError(error)) {
+                throw new Error(`AUTH_NETWORK_ERROR: ${error.message}`);
+            }
+            if (onInvalid) onInvalid(account.email, error.message);
+            throw new Error(`AUTH_INVALID: ${account.email}: ${error.message}`);
+        }
+    }
+
+    // GitHub Copilot (exchange GitHub OAuth token for short-lived Copilot session token)
+    if (providerId === 'github-copilot') {
+        const githubToken = account.refreshToken || account.apiKey;
+        if (!githubToken) {
+            throw new Error(`AUTH_INVALID: ${account.email}: Missing GitHub OAuth token`);
+        }
+        try {
+            const session = await exchangeCopilotSessionToken(githubToken);
+            account.extra = { ...(account.extra || {}), copilotBaseUrl: session.baseUrl };
+            if (account.isInvalid) {
+                account.isInvalid = false;
+                account.invalidReason = null;
+                if (onSave) await onSave();
+            }
+            tokenCache.set(account.email, {
+                token: session.token,
+                extractedAt: Date.now(),
+                expiresAt: session.expiresAt
+            });
+            return session.token;
+        } catch (error) {
+            if (isNetworkError(error)) {
+                throw new Error(`AUTH_NETWORK_ERROR: ${error.message}`);
+            }
+            if (onInvalid) onInvalid(account.email, error.message);
+            throw new Error(`AUTH_INVALID: ${account.email}: ${error.message}`);
+        }
+    }
+
+    // Default: Antigravity (Google OAuth / manual / local database)
     let token;
 
     if (account.source === 'oauth' && account.refreshToken) {

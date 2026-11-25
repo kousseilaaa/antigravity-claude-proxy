@@ -39,7 +39,8 @@
     "test:strategies": "node tests/test-strategies.cjs",
     "test:cache-control": "node tests/test-cache-control.cjs",
     "test:billing-header": "node tests/test-billing-header.cjs",
-    "test:stats": "node tests/test-usage-stats.js"
+    "test:stats": "node tests/test-usage-stats.js",
+    "test:providers": "node tests/test-multi-provider.mjs"
   },
   "keywords": [
     "claude",

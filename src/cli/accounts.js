@@ -28,6 +28,19 @@ import {
     getUserEmail,
     extractCodeFromInput
 } from '../auth/oauth.js';
+import {
+    listProviders,
+    getProvider,
+    AUTH_TYPES,
+    DEFAULT_PROVIDER,
+    getCodexAuthorizationUrl,
+    startCodexCallbackServer,
+    exchangeCodexCode,
+    extractCodexCodeFromInput,
+    startCopilotDeviceFlow,
+    pollCopilotDeviceFlowOnce,
+    getGitHubUser
+} from '../providers/index.js';
 
 const SERVER_PORT = process.env.PORT || DEFAULT_PORT;
 
@@ -137,10 +150,19 @@ function saveAccounts(accounts, settings = {}) {
 
         const config = {
             accounts: accounts.map(acc => ({
+                ...acc,
                 email: acc.email,
-                source: 'oauth',
-                refreshToken: acc.refreshToken,
-                projectId: acc.projectId,
+                provider: acc.provider || DEFAULT_PROVIDER,
+                source: acc.source || (acc.apiKey ? 'api-key' : 'oauth'),
+                refreshToken: acc.refreshToken || undefined,
+                accessToken: acc.accessToken || undefined,
+                expiresAt: acc.expiresAt || undefined,
+                apiKey: acc.apiKey || undefined,
+                baseUrl: acc.baseUrl || undefined,
+                protocol: acc.protocol || undefined,
+                customModels: acc.customModels || undefined,
+                extra: acc.extra || undefined,
+                projectId: acc.projectId || undefined,
                 addedAt: acc.addedAt || new Date().toISOString(),
                 lastUsed: acc.lastUsed || null,
                 modelRateLimits: acc.modelRateLimits || {}
@@ -175,8 +197,9 @@ function displayAccounts(accounts) {
         const hasActiveLimit = Object.values(acc.modelRateLimits || {}).some(
             limit => limit.isRateLimited && limit.resetTime > Date.now()
         );
+        const provider = acc.provider || DEFAULT_PROVIDER;
         const status = hasActiveLimit ? ' (rate-limited)' : '';
-        console.log(`  ${i + 1}. ${acc.email}${status}`);
+        console.log(`  ${i + 1}. [${provider}] ${acc.email}${status}`);
     });
 }
 
@@ -289,6 +312,163 @@ async function addAccountNoBrowser(existingAccounts, rl) {
 }
 
 /**
+ * Add an OpenAI Codex (ChatGPT) account via OAuth PKCE
+ */
+async function addOpenAICodexAccount(existingAccounts, rl, noBrowser = false) {
+    console.log('\n=== Add OpenAI Codex (ChatGPT) Account ===\n');
+    const { url, verifier, state } = getCodexAuthorizationUrl();
+
+    let code;
+    try {
+        if (noBrowser) {
+            console.log('Open this URL in a browser:\n');
+            console.log(`   ${url}\n`);
+            const input = await rl.question('Paste the callback URL or authorization code: ');
+            code = extractCodexCodeFromInput(input).code;
+        } else {
+            console.log('Opening browser for OpenAI sign-in...');
+            console.log(`   ${url}\n`);
+            openBrowser(url);
+            console.log('Waiting for callback on http://localhost:1455/auth/callback ...\n');
+            const { promise } = startCodexCallbackServer(state);
+            code = await promise;
+        }
+
+        const data = await exchangeCodexCode(code, verifier);
+        const existing = existingAccounts.find(a => a.email === data.email);
+        if (existing) {
+            console.log(`\n⚠ Account ${data.email} already exists. Updating tokens.`);
+            existing.provider = 'openai-codex';
+            existing.accessToken = data.accessToken;
+            existing.refreshToken = data.refreshToken;
+            existing.expiresAt = data.expiresAt;
+            existing.extra = { chatgptAccountId: data.chatgptAccountId };
+            return null;
+        }
+        console.log(`\n✓ Connected OpenAI Codex account: ${data.email}`);
+        return {
+            email: data.email,
+            provider: 'openai-codex',
+            label: 'OpenAI Codex',
+            source: 'oauth',
+            accessToken: data.accessToken,
+            refreshToken: data.refreshToken,
+            expiresAt: data.expiresAt,
+            extra: { chatgptAccountId: data.chatgptAccountId },
+            addedAt: new Date().toISOString(),
+            modelRateLimits: {}
+        };
+    } catch (error) {
+        console.error(`\n✗ OpenAI Codex authentication failed: ${error.message}`);
+        return null;
+    }
+}
+
+/**
+ * Add a GitHub Copilot account via Device Code OAuth
+ */
+async function addGitHubCopilotAccount(existingAccounts) {
+    console.log('\n=== Add GitHub Copilot Account ===\n');
+    try {
+        const flow = await startCopilotDeviceFlow();
+        console.log(`1. Open: ${flow.verificationUri}`);
+        console.log(`2. Enter code: ${flow.userCode}\n`);
+        openBrowser(flow.verificationUri);
+        console.log('Waiting for GitHub authorization...');
+
+        let intervalMs = Math.max(5000, (flow.interval || 5) * 1000);
+        const deadline = Date.now() + (flow.expiresIn || 900) * 1000;
+        while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, intervalMs));
+            const poll = await pollCopilotDeviceFlowOnce(flow.deviceCode);
+            if (poll.status === 'complete' && poll.accessToken) {
+                const user = await getGitHubUser(poll.accessToken);
+                const existing = existingAccounts.find(a => a.email === user.email);
+                if (existing) {
+                    existing.provider = 'github-copilot';
+                    existing.refreshToken = poll.accessToken;
+                    console.log(`\n✓ Updated GitHub Copilot account: ${user.email}`);
+                    return null;
+                }
+                console.log(`\n✓ Connected GitHub Copilot account: ${user.email}`);
+                return {
+                    email: user.email,
+                    provider: 'github-copilot',
+                    label: `Copilot (${user.login})`,
+                    source: 'oauth',
+                    refreshToken: poll.accessToken,
+                    addedAt: new Date().toISOString(),
+                    modelRateLimits: {}
+                };
+            } else if (poll.status === 'slow_down') {
+                intervalMs = Math.max(intervalMs + 5000, (poll.interval || 10) * 1000);
+            } else if (poll.status === 'expired') {
+                throw new Error(poll.error || 'Device code expired');
+            }
+        }
+        throw new Error('GitHub Device Flow timed out');
+    } catch (error) {
+        console.error(`\n✗ GitHub Copilot authentication failed: ${error.message}`);
+        return null;
+    }
+}
+
+/**
+ * Add an API Key provider account interactively
+ */
+async function addApiKeyAccount(providerId, existingAccounts, rl) {
+    const provider = getProvider(providerId);
+    console.log(`\n=== Add ${provider.name} Account ===\n`);
+
+    const apiKey = (await rl.question(`API Key (${provider.keyPlaceholder || 'sk-...'}): `)).trim();
+    if (!apiKey && providerId !== 'custom') {
+        console.error('\n✗ API key is required.');
+        return null;
+    }
+
+    let baseUrl = provider.defaultBaseUrl || '';
+    if (provider.allowCustomBaseUrl) {
+        const urlInput = (await rl.question(`Base URL [${baseUrl}]: `)).trim();
+        baseUrl = urlInput || baseUrl;
+    }
+
+    let protocol = provider.protocol;
+    if (provider.allowProtocolChoice) {
+        const protoInput = (await rl.question('Protocol (openai-chat / anthropic) [openai-chat]: ')).trim();
+        if (protoInput === 'anthropic') protocol = 'anthropic';
+    }
+
+    const label = (await rl.question(`Account label (optional, e.g. personal): `)).trim();
+    const modelsRaw = (await rl.question('Custom model IDs (comma-separated, optional): ')).trim();
+    const customModels = modelsRaw ? modelsRaw.split(',').map(m => m.trim()).filter(Boolean) : [];
+
+    const email = label ? `${label}@${providerId}` : `${providerId}-${Date.now().toString(36)}@api-key`;
+    const existing = existingAccounts.find(a => a.email === email);
+    if (existing) {
+        existing.apiKey = apiKey;
+        existing.baseUrl = baseUrl || undefined;
+        existing.protocol = protocol;
+        existing.customModels = customModels;
+        console.log(`\n✓ Updated ${provider.name} account: ${email}`);
+        return null;
+    }
+
+    console.log(`\n✓ Added ${provider.name} account: ${email}`);
+    return {
+        email,
+        provider: providerId,
+        label: label || provider.name,
+        source: 'api-key',
+        apiKey,
+        baseUrl: baseUrl || undefined,
+        protocol,
+        customModels,
+        addedAt: new Date().toISOString(),
+        modelRateLimits: {}
+    };
+}
+
+/**
  * Interactive remove accounts flow
  */
 async function interactiveRemove(rl) {
@@ -372,10 +552,29 @@ async function interactiveAdd(rl, noBrowser = false) {
         return;
     }
 
-    // Use appropriate add function based on mode
-    const newAccount = noBrowser
-        ? await addAccountNoBrowser(accounts, rl)
-        : await addAccount(accounts);
+    // Select provider
+    const providers = listProviders();
+    console.log('\nSelect provider:');
+    providers.forEach((p, idx) => {
+        const tag = p.authType === AUTH_TYPES.API_KEY ? 'API Key' : (p.authType === AUTH_TYPES.DEVICE_CODE ? 'Device Code' : 'OAuth');
+        console.log(`  ${idx + 1}. ${p.name} [${tag}]`);
+    });
+    const providerChoice = (await rl.question(`\nProvider number [1]: `)).trim();
+    const chosenIdx = providerChoice ? parseInt(providerChoice, 10) - 1 : 0;
+    const selectedProvider = providers[chosenIdx] || providers[0];
+
+    let newAccount = null;
+    if (selectedProvider.id === 'antigravity') {
+        newAccount = noBrowser
+            ? await addAccountNoBrowser(accounts, rl)
+            : await addAccount(accounts);
+    } else if (selectedProvider.id === 'openai-codex') {
+        newAccount = await addOpenAICodexAccount(accounts, rl, noBrowser);
+    } else if (selectedProvider.id === 'github-copilot') {
+        newAccount = await addGitHubCopilotAccount(accounts);
+    } else {
+        newAccount = await addApiKeyAccount(selectedProvider.id, accounts, rl);
+    }
 
     if (newAccount) {
         accounts.push(newAccount);

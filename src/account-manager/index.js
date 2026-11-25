@@ -35,6 +35,7 @@ import {
 } from './credentials.js';
 import { createStrategy, getStrategyLabel, DEFAULT_STRATEGY } from './strategies/index.js';
 import { logger } from '../utils/logger.js';
+import { getAccountProvider } from '../providers/registry.js';
 
 export class AccountManager {
     #accounts = [];
@@ -126,8 +127,11 @@ export class AccountManager {
      * @param {string} [modelId] - Optional model ID
      * @returns {Array<Object>} Array of available account objects
      */
-    getAvailableAccounts(modelId = null) {
-        return getAvailable(this.#accounts, modelId);
+    getAvailableAccounts(modelId = null, providerId = null) {
+        const pool = providerId
+            ? this.#accounts.filter(a => getAccountProvider(a) === providerId)
+            : this.#accounts;
+        return getAvailable(pool, modelId);
     }
 
     /**
@@ -182,13 +186,19 @@ export class AccountManager {
             throw new Error('AccountManager not initialized. Call initialize() first.');
         }
 
-        const result = this.#strategy.selectAccount(this.#accounts, modelId, {
+        const pool = options.providerId
+            ? this.#accounts.filter(a => getAccountProvider(a) === options.providerId)
+            : this.#accounts;
+
+        const result = this.#strategy.selectAccount(pool, modelId, {
             currentIndex: this.#currentIndex,
             onSave: () => this.saveToDisk(),
             ...options
         });
 
-        this.#currentIndex = result.index;
+        if (!options.providerId) {
+            this.#currentIndex = result.index;
+        }
         return { account: result.account, waitMs: result.waitMs || 0 };
     }
 
@@ -444,8 +454,13 @@ export class AccountManager {
             summary: `${this.#accounts.length} total, ${available.length} available, ${rateLimited.length} rate-limited, ${invalid.length} invalid`,
             accounts: this.#accounts.map(a => ({
                 email: a.email,
+                provider: getAccountProvider(a),
+                label: a.label || null,
                 source: a.source,
                 enabled: a.enabled !== false,  // Default to true if undefined
+                baseUrl: a.baseUrl || null,
+                protocol: a.protocol || null,
+                customModels: a.customModels || [],
                 projectId: a.projectId || null,
                 modelRateLimits: a.modelRateLimits || {},
                 isInvalid: a.isInvalid || false,

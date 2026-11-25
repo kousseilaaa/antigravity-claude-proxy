@@ -62,7 +62,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
         accountManager.clearExpiredLimits();
 
         // Get available accounts for this model
-        const availableAccounts = accountManager.getAvailableAccounts(model);
+        const availableAccounts = accountManager.getAvailableAccounts(model, 'antigravity');
 
         // If no accounts available, check if we should wait or throw error
         if (availableAccounts.length === 0) {
@@ -114,7 +114,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
         }
 
         // Select account using configured strategy
-        const { account, waitMs } = accountManager.selectAccount(model);
+        const { account, waitMs } = accountManager.selectAccount(model, { providerId: 'antigravity' });
 
         // If strategy returns a wait time without an account, sleep and retry
         if (!account && waitMs > 0) {

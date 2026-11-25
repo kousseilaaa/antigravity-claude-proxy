@@ -22,6 +22,20 @@ import { logger } from '../utils/logger.js';
 import { getAuthorizationUrl, completeOAuthFlow, startCallbackServer } from '../auth/oauth.js';
 import { loadAccounts, saveAccounts } from '../account-manager/storage.js';
 import { getPackageVersion } from '../utils/helpers.js';
+import {
+    listProviders,
+    getProvider,
+    AUTH_TYPES,
+    DEFAULT_PROVIDER,
+    testProviderAccount,
+    getCodexAuthorizationUrl,
+    startCodexCallbackServer,
+    exchangeCodexCode,
+    extractCodexCodeFromInput,
+    startCopilotDeviceFlow,
+    pollCopilotDeviceFlowOnce,
+    getGitHubUser
+} from '../providers/index.js';
 
 // Get package version
 const packageVersion = getPackageVersion();
@@ -452,7 +466,16 @@ export function mountWebUI(app, dirname, accountManager) {
             const exportData = accounts
                 .filter(acc => acc.source !== 'database')
                 .map(acc => {
-                    const essential = { email: acc.email };
+                    const essential = {
+                        email: acc.email,
+                        provider: acc.provider || DEFAULT_PROVIDER
+                    };
+                    if (acc.label) essential.label = acc.label;
+                    if (acc.baseUrl) essential.base_url = acc.baseUrl;
+                    if (acc.protocol) essential.protocol = acc.protocol;
+                    if (Array.isArray(acc.customModels) && acc.customModels.length > 0) {
+                        essential.custom_models = acc.customModels;
+                    }
                     // Use snake_case for compatibility
                     if (acc.refreshToken) {
                         essential.refresh_token = acc.refreshToken;
@@ -517,9 +540,15 @@ export function mountWebUI(app, dirname, accountManager) {
                     const exists = existingEmails.has(acc.email);
 
                     // Add account
+                    const provider = acc.provider || DEFAULT_PROVIDER;
                     await addAccount({
                         email: acc.email,
-                        source: apiKey ? 'manual' : 'oauth',
+                        provider,
+                        label: acc.label || undefined,
+                        baseUrl: acc.base_url || acc.baseUrl || undefined,
+                        protocol: acc.protocol || undefined,
+                        customModels: acc.custom_models || acc.customModels || undefined,
+                        source: apiKey ? (provider === DEFAULT_PROVIDER ? 'manual' : 'api-key') : 'oauth',
                         refreshToken: refreshToken,
                         apiKey: apiKey
                     });
@@ -1236,6 +1265,256 @@ export function mountWebUI(app, dirname, accountManager) {
             });
         } catch (error) {
             logger.error('[WebUI] Manual OAuth completion error:', error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * GET /api/providers - List all supported providers (OAuth & API key)
+     */
+    app.get('/api/providers', (req, res) => {
+        res.json({
+            status: 'ok',
+            providers: listProviders()
+        });
+    });
+
+    /**
+     * POST /api/accounts/api-key - Add or update an API key provider account
+     * Body: { provider, apiKey, label?, email?, baseUrl?, protocol?, customModels?, test? }
+     */
+    app.post('/api/accounts/api-key', async (req, res) => {
+        try {
+            const { provider: providerId, apiKey, label, email, baseUrl, protocol, customModels, test } = req.body;
+
+            const provider = getProvider(providerId);
+            if (!provider || provider.authType !== AUTH_TYPES.API_KEY) {
+                return res.status(400).json({
+                    status: 'error',
+                    error: `Invalid API key provider: ${providerId}`
+                });
+            }
+
+            if (!apiKey && providerId !== 'custom') {
+                return res.status(400).json({
+                    status: 'error',
+                    error: 'API key is required'
+                });
+            }
+
+            if (providerId === 'custom' && !baseUrl) {
+                return res.status(400).json({
+                    status: 'error',
+                    error: 'Base URL is required for custom provider'
+                });
+            }
+
+            const cleanLabel = (label || '').trim();
+            const accountEmail = (email || '').trim() ||
+                (cleanLabel ? `${cleanLabel}@${providerId}` : `${providerId}-${Date.now().toString(36)}@api-key`);
+
+            const parsedModels = Array.isArray(customModels)
+                ? customModels.map(m => String(m).trim()).filter(Boolean)
+                : (typeof customModels === 'string'
+                    ? customModels.split(',').map(m => m.trim()).filter(Boolean)
+                    : []);
+
+            const accountPayload = {
+                email: accountEmail,
+                provider: providerId,
+                label: cleanLabel || provider.name,
+                source: 'api-key',
+                apiKey: apiKey ? String(apiKey).trim() : '',
+                baseUrl: baseUrl ? String(baseUrl).trim() : undefined,
+                protocol: protocol || undefined,
+                customModels: parsedModels
+            };
+
+            // Optional connectivity test before saving
+            if (test) {
+                const testResult = await testProviderAccount(accountPayload, accountManager);
+                if (!testResult.ok) {
+                    return res.status(400).json({
+                        status: 'error',
+                        error: `Connection test failed: ${testResult.error}`
+                    });
+                }
+            }
+
+            await addAccount(accountPayload);
+            await accountManager.reload();
+
+            logger.success(`[WebUI] Added ${provider.name} API key account: ${accountEmail}`);
+            res.json({
+                status: 'ok',
+                email: accountEmail,
+                provider: providerId,
+                message: `${provider.name} account added successfully`
+            });
+        } catch (error) {
+            logger.error('[WebUI] Error adding API key account:', error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/accounts/:email/test - Test connectivity for a provider account
+     */
+    app.post('/api/accounts/:email/test', async (req, res) => {
+        try {
+            const { email } = req.params;
+            const account = accountManager.getAllAccounts().find(a => a.email === email);
+            if (!account) {
+                return res.status(404).json({ status: 'error', error: `Account ${email} not found` });
+            }
+            const result = await testProviderAccount(account, accountManager);
+            res.json({ status: result.ok ? 'ok' : 'error', ...result });
+        } catch (error) {
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * GET /api/auth/openai-codex/url - Start OpenAI Codex (ChatGPT) OAuth PKCE flow
+     */
+    app.get('/api/auth/openai-codex/url', async (req, res) => {
+        try {
+            const { url, verifier, state } = getCodexAuthorizationUrl();
+            const { promise: serverPromise, abort: abortServer } = startCodexCallbackServer(state, 180000);
+
+            pendingOAuthFlows.set(state, {
+                provider: 'openai-codex',
+                serverPromise,
+                abortServer,
+                verifier,
+                state,
+                timestamp: Date.now()
+            });
+
+            serverPromise
+                .then(async (code) => {
+                    try {
+                        logger.info('[WebUI] Received OpenAI Codex OAuth callback, completing flow...');
+                        const data = await exchangeCodexCode(code, verifier);
+                        await addAccount({
+                            email: data.email,
+                            provider: 'openai-codex',
+                            label: 'OpenAI Codex',
+                            source: 'oauth',
+                            accessToken: data.accessToken,
+                            refreshToken: data.refreshToken,
+                            expiresAt: data.expiresAt,
+                            extra: { chatgptAccountId: data.chatgptAccountId }
+                        });
+                        await accountManager.reload();
+                        logger.success(`[WebUI] OpenAI Codex account ${data.email} added successfully`);
+                    } catch (err) {
+                        logger.error('[WebUI] OpenAI Codex OAuth completion error:', err);
+                    } finally {
+                        pendingOAuthFlows.delete(state);
+                    }
+                })
+                .catch((err) => {
+                    if (!err.message?.includes('aborted')) {
+                        logger.error('[WebUI] OpenAI Codex callback server error:', err);
+                    }
+                    pendingOAuthFlows.delete(state);
+                });
+
+            res.json({ status: 'ok', url, state });
+        } catch (error) {
+            logger.error('[WebUI] Error generating OpenAI Codex auth URL:', error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/auth/openai-codex/complete - Complete OpenAI Codex OAuth manually
+     */
+    app.post('/api/auth/openai-codex/complete', async (req, res) => {
+        try {
+            const { callbackInput, state } = req.body;
+            if (!callbackInput || !state) {
+                return res.status(400).json({ status: 'error', error: 'Missing callbackInput or state' });
+            }
+            const flowData = pendingOAuthFlows.get(state);
+            if (!flowData || flowData.provider !== 'openai-codex') {
+                return res.status(400).json({
+                    status: 'error',
+                    error: 'OpenAI OAuth flow not found or already completed. Please refresh the account list.'
+                });
+            }
+
+            const { code } = extractCodexCodeFromInput(callbackInput);
+            const data = await exchangeCodexCode(code, flowData.verifier);
+            await addAccount({
+                email: data.email,
+                provider: 'openai-codex',
+                label: 'OpenAI Codex',
+                source: 'oauth',
+                accessToken: data.accessToken,
+                refreshToken: data.refreshToken,
+                expiresAt: data.expiresAt,
+                extra: { chatgptAccountId: data.chatgptAccountId }
+            });
+            await accountManager.reload();
+            if (flowData.abortServer) flowData.abortServer();
+            pendingOAuthFlows.delete(state);
+
+            res.json({
+                status: 'ok',
+                email: data.email,
+                message: `OpenAI Codex account ${data.email} added successfully`
+            });
+        } catch (error) {
+            logger.error('[WebUI] Manual OpenAI Codex OAuth error:', error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/auth/github-copilot/start - Start GitHub Copilot Device Code flow
+     */
+    app.post('/api/auth/github-copilot/start', async (req, res) => {
+        try {
+            const flow = await startCopilotDeviceFlow();
+            res.json({ status: 'ok', ...flow });
+        } catch (error) {
+            logger.error('[WebUI] Error starting GitHub Copilot device flow:', error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/auth/github-copilot/poll - Poll GitHub Copilot Device Code flow once
+     */
+    app.post('/api/auth/github-copilot/poll', async (req, res) => {
+        try {
+            const { deviceCode } = req.body;
+            if (!deviceCode) {
+                return res.status(400).json({ status: 'error', error: 'deviceCode is required' });
+            }
+            const poll = await pollCopilotDeviceFlowOnce(deviceCode);
+            if (poll.status === 'complete' && poll.accessToken) {
+                const user = await getGitHubUser(poll.accessToken);
+                await addAccount({
+                    email: user.email,
+                    provider: 'github-copilot',
+                    label: `Copilot (${user.login})`,
+                    source: 'oauth',
+                    refreshToken: poll.accessToken
+                });
+                await accountManager.reload();
+                logger.success(`[WebUI] GitHub Copilot account ${user.email} added successfully`);
+                return res.json({
+                    status: 'complete',
+                    email: user.email,
+                    message: `GitHub Copilot account ${user.email} connected`
+                });
+            }
+            res.json(poll);
+        } catch (error) {
+            logger.error('[WebUI] GitHub Copilot poll error:', error);
             res.status(500).json({ status: 'error', error: error.message });
         }
     });
