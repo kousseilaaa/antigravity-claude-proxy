@@ -17,7 +17,7 @@ document.addEventListener('alpine:init', () => {
         logExport: true,
         healthInspector: true,
         healthInspectorOpen: false,
-        port: 8080, // Display only
+        port: 18080, // Display only
 
         init() {
             this.loadSettings();

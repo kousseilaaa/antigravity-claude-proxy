@@ -30,6 +30,7 @@ function deepMerge(target, source) {
 
 // Default config
 const DEFAULT_CONFIG = {
+    port: 18080,
     apiKey: '',
     webuiPassword: '',
     debug: false,
