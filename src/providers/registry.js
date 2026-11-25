@@ -41,16 +41,14 @@ export const PROVIDERS = {
         description: 'Connect your ChatGPT Plus/Pro/Team account via OpenAI OAuth',
         badgeColor: 'emerald',
         defaultBaseUrl: 'https://chatgpt.com/backend-api/codex',
-        modelsEndpoint: null,
+        modelsEndpoint: 'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0',
         defaultModels: [
-            { id: 'gpt-5.4', name: 'GPT-5.4' },
             { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex' },
             { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex' },
             { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex' },
             { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini' },
-            { id: 'gpt-5', name: 'GPT-5' },
-            { id: 'o3', name: 'o3' },
-            { id: 'o4-mini', name: 'o4-mini' }
+            { id: 'gpt-5.2', name: 'GPT-5.2' },
+            { id: 'gpt-5.1', name: 'GPT-5.1' }
         ]
     },
     'github-copilot': {

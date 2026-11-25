@@ -66,8 +66,9 @@ export function resolveProviderForModel(requestedModel, availableAccounts = []) 
             return { providerId: pid, modelId: requestedModel, explicit: false };
         }
         if (acc.quota?.models && Object.prototype.hasOwnProperty.call(acc.quota.models, requestedModel)) {
-            // If Antigravity also has this model (e.g. claude-sonnet-*), prefer Antigravity unless no Antigravity account
-            if (!hasAntigravity) {
+            // If Antigravity also has this model (claude-*/gemini-*), prefer Antigravity unless no Antigravity account
+            const isAntigravityFamily = requestedModel.startsWith('claude-') || requestedModel.startsWith('gemini-');
+            if (!hasAntigravity || !isAntigravityFamily) {
                 return { providerId: pid, modelId: requestedModel, explicit: false };
             }
         }
@@ -143,6 +144,13 @@ export async function listProviderModels(account, accountManager) {
             } else if (providerId === 'github-copilot') {
                 headers['Authorization'] = `Bearer ${token}`;
                 Object.assign(headers, COPILOT_HEADERS);
+            } else if (providerId === 'openai-codex') {
+                headers['Authorization'] = `Bearer ${token}`;
+                headers['originator'] = 'codex_cli_rs';
+                headers['User-Agent'] = 'codex_cli_rs/1.0.0';
+                if (account.extra?.chatgptAccountId) {
+                    headers['chatgpt-account-id'] = account.extra.chatgptAccountId;
+                }
             } else if (token) {
                 headers['Authorization'] = `Bearer ${token}`;
             }
@@ -153,10 +161,16 @@ export async function listProviderModels(account, accountManager) {
                 const res = await fetch(modelsUrl, { headers, signal: controller.signal });
                 if (res.ok) {
                     const data = await res.json();
-                    const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+                    const list = Array.isArray(data?.data)
+                        ? data.data
+                        : (Array.isArray(data?.models) ? data.models : (Array.isArray(data) ? data : []));
                     for (const item of list) {
-                        if (item?.id) {
-                            addModel(item.id, item.display_name || item.name || item.id);
+                        if (!item) continue;
+                        // Skip hidden internal models returned by Codex (/backend-api/codex/models)
+                        if (item.visibility === 'hide') continue;
+                        const id = item.id || item.slug;
+                        if (id) {
+                            addModel(id, item.display_name || item.name || id);
                         }
                     }
                 }
