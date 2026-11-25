@@ -254,7 +254,7 @@ document.addEventListener('alpine:init', () => {
                 // Note: To manage hidden models, use Settings → Models tab
                 let isHidden = config.hidden;
                 if (isHidden === undefined) {
-                    isHidden = (family === 'other' || family === 'unknown');
+                    isHidden = (family === 'other' || family === 'unknown') && !this.isExternalProviderModel(modelId);
                 }
 
                 // Models Page: Check settings for visibility
@@ -386,10 +386,22 @@ document.addEventListener('alpine:init', () => {
             this.computeQuotaRows();
         },
 
+        isExternalProviderModel(modelId) {
+            return (this.accounts || []).some(acc =>
+                acc.provider && acc.provider !== 'antigravity' && acc.limits && acc.limits[modelId]
+            );
+        },
+
         getModelFamily(modelId) {
             const lower = modelId.toLowerCase();
             if (lower.includes('claude')) return 'claude';
             if (lower.includes('gemini')) return 'gemini';
+            if (
+                lower.includes('gpt-') ||
+                lower.includes('codex') ||
+                lower.includes('openai/') ||
+                /(^|\/)o[134](-|$)/.test(lower)
+            ) return 'openai';
             return 'other';
         },
 
@@ -409,7 +421,7 @@ document.addEventListener('alpine:init', () => {
                 // Smart visibility (same logic as computeQuotaRows)
                 let isHidden = config.hidden;
                 if (isHidden === undefined) {
-                    isHidden = (family === 'other' || family === 'unknown');
+                    isHidden = (family === 'other' || family === 'unknown') && !this.isExternalProviderModel(modelId);
                 }
                 if (isHidden && !showHidden) return;
 

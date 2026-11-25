@@ -44,11 +44,12 @@ window.Components.modelDropdown = (field, labelKey, accentColor) => ({
         const groups = [
             { family: 'claude', label: this.$store.global.t('familyClaude'), items: [] },
             { family: 'gemini', label: this.$store.global.t('familyGemini'), items: [] },
+            { family: 'openai', label: 'OpenAI / Codex', items: [] },
             { family: 'other', label: this.$store.global.t('familyOther'), items: [] }
         ];
         for (const modelId of this.filteredModels) {
             const fam = this.$store.data.getModelFamily(modelId);
-            const group = groups.find(g => g.family === fam) || groups[2];
+            const group = groups.find(g => g.family === fam) || groups[groups.length - 1];
             group.items.push(modelId);
         }
         return groups.filter(g => g.items.length > 0);

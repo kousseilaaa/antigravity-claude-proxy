@@ -81,6 +81,18 @@
                         : 'text-gray-400 hover:text-white hover:bg-space-700 hover:border-space-border'"
                     @click="$store.data.filters.family = 'gemini'; $store.data.computeQuotaRows()"
                     x-text="$store.global.t('geminiCaps')">GEMINI</button>
+                <button
+                    class="join-item btn btn-xs h-full flex-1 md:flex-none px-5 border-space-border/50 bg-space-800 transition-colors font-medium text-xs"
+                    :class="$store.data.filters.family === 'openai'
+                        ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/50'
+                        : 'text-gray-400 hover:text-white hover:bg-space-700 hover:border-space-border'"
+                    @click="$store.data.filters.family = 'openai'; $store.data.computeQuotaRows()">OPENAI</button>
+                <button
+                    class="join-item btn btn-xs h-full flex-1 md:flex-none px-5 border-space-border/50 bg-space-800 transition-colors font-medium text-xs"
+                    :class="$store.data.filters.family === 'other'
+                        ? 'bg-neon-cyan/15 text-neon-cyan border-neon-cyan/50'
+                        : 'text-gray-400 hover:text-white hover:bg-space-700 hover:border-space-border'"
+                    @click="$store.data.filters.family = 'other'; $store.data.computeQuotaRows()">OTHER</button>
             </div>
 
             <!-- Show Hidden Toggle -->
