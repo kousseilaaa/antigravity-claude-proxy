@@ -193,6 +193,144 @@ export async function listProviderModels(account, accountManager) {
 }
 
 /**
+ * Format a rate-limit window duration in seconds to a compact human label (e.g. "5h", "7d", "30d").
+ */
+function formatWindowLabel(seconds) {
+    if (!seconds || !Number.isFinite(seconds)) return 'quota';
+    const days = Math.round(seconds / 86400);
+    if (days >= 1) return `${days}d`;
+    const hours = Math.round(seconds / 3600);
+    if (hours >= 1) return `${hours}h`;
+    return `${Math.max(1, Math.round(seconds / 60))}m`;
+}
+
+/**
+ * Fetch live quota/usage information for a non-Antigravity provider account.
+ * Supports:
+ *  - openai-codex: https://chatgpt.com/backend-api/wham/usage (primary/secondary rate_limit windows + plan_type)
+ *  - github-copilot: https://api.github.com/copilot_internal/user (quota_snapshots + copilot_plan)
+ *  - openrouter: https://openrouter.ai/api/v1/auth/key (credit limit & remaining)
+ *  - all other providers: derives status from active account.modelRateLimits
+ *
+ * @param {Object} account
+ * @param {import('../account-manager/index.js').default} accountManager
+ * @returns {Promise<{ tier: string, windows: Array<{ label: string, remainingFraction: number, resetTime: string|null }>, quotas: Record<string, { remainingFraction: number, resetTime: string|null }> }>}
+ */
+export async function fetchProviderQuota(account, accountManager) {
+    const providerId = getAccountProvider(account);
+    const provider = getProvider(providerId);
+    let tier = provider?.shortName?.toLowerCase() || providerId;
+    let remainingFraction = 1;
+    let resetTime = null;
+    const windows = [];
+
+    const models = await listProviderModels(account, accountManager);
+
+    try {
+        const token = await accountManager.getTokenForAccount(account);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        try {
+            if (providerId === 'openai-codex' && token) {
+                const headers = {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/json',
+                    'originator': 'codex_cli_rs',
+                    'User-Agent': 'codex_cli_rs/1.0.0'
+                };
+                if (account.extra?.chatgptAccountId) {
+                    headers['chatgpt-account-id'] = account.extra.chatgptAccountId;
+                }
+                const res = await fetch('https://chatgpt.com/backend-api/wham/usage', {
+                    headers,
+                    signal: controller.signal
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.plan_type) tier = String(data.plan_type).toLowerCase();
+                    const rl = data.rate_limit || {};
+                    const rawWindows = [rl.primary_window, rl.secondary_window].filter(Boolean);
+                    for (const w of rawWindows) {
+                        if (typeof w.used_percent !== 'number') continue;
+                        const rem = Math.max(0, Math.min(1, (100 - w.used_percent) / 100));
+                        const rIso = typeof w.reset_at === 'number'
+                            ? new Date(w.reset_at * 1000).toISOString()
+                            : (typeof w.reset_after_seconds === 'number'
+                                ? new Date(Date.now() + w.reset_after_seconds * 1000).toISOString()
+                                : null);
+                        windows.push({
+                            label: formatWindowLabel(w.limit_window_seconds),
+                            remainingFraction: rem,
+                            resetTime: rIso
+                        });
+                    }
+                    if (windows.length > 0) {
+                        const worst = windows.reduce((a, b) => (b.remainingFraction < a.remainingFraction ? b : a));
+                        remainingFraction = worst.remainingFraction;
+                        resetTime = worst.resetTime;
+                    } else if (rl.limit_reached) {
+                        remainingFraction = 0;
+                    }
+                }
+            } else if (providerId === 'github-copilot') {
+                const ghToken = account.refreshToken || account.apiKey;
+                if (ghToken) {
+                    const res = await fetch('https://api.github.com/copilot_internal/user', {
+                        headers: {
+                            'Authorization': `token ${ghToken}`,
+                            'Accept': 'application/json',
+                            'User-Agent': 'GithubCopilot/1.155.0'
+                        },
+                        signal: controller.signal
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.copilot_plan) tier = String(data.copilot_plan).toLowerCase();
+                        const snap = data.quota_snapshots?.premium_interactions || data.quota_snapshots?.chat;
+                        const rIso = data.quota_reset_date ? new Date(data.quota_reset_date).toISOString() : null;
+                        if (snap && typeof snap.percent_remaining === 'number') {
+                            remainingFraction = Math.max(0, Math.min(1, snap.percent_remaining / 100));
+                            resetTime = rIso;
+                            windows.push({ label: 'monthly', remainingFraction, resetTime });
+                        }
+                    }
+                }
+            } else if (providerId === 'openrouter' && token) {
+                const res = await fetch('https://openrouter.ai/api/v1/auth/key', {
+                    headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+                    signal: controller.signal
+                });
+                if (res.ok) {
+                    const json = await res.json();
+                    const d = json?.data || {};
+                    if (typeof d.limit === 'number' && d.limit > 0 && typeof d.limit_remaining === 'number') {
+                        remainingFraction = Math.max(0, Math.min(1, d.limit_remaining / d.limit));
+                        windows.push({ label: 'credits', remainingFraction, resetTime: null });
+                    }
+                }
+            }
+        } finally {
+            clearTimeout(timer);
+        }
+    } catch (err) {
+        logger.debug(`[Provider:${providerId}] Live quota fetch failed for ${account.email}: ${err.message}`);
+    }
+
+    const now = Date.now();
+    const quotas = {};
+    for (const m of models) {
+        const rl = account.modelRateLimits?.[m.id];
+        if (rl && rl.isRateLimited && rl.resetTime > now) {
+            quotas[m.id] = { remainingFraction: 0, resetTime: new Date(rl.resetTime).toISOString() };
+        } else {
+            quotas[m.id] = { remainingFraction, resetTime };
+        }
+    }
+
+    return { tier, windows, quotas };
+}
+
+/**
  * Test connectivity for a non-Antigravity account
  * @param {Object} account
  * @param {import('../account-manager/index.js').default} accountManager

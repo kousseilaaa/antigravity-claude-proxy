@@ -28,6 +28,7 @@ import {
     isAntigravityAccount,
     resolveProviderForModel,
     listProviderModels,
+    fetchProviderQuota,
     sendProviderMessage,
     streamProviderMessage
 } from './providers/index.js';
@@ -257,8 +258,12 @@ app.get('/health', async (req, res) => {
                     ? Math.min(...activeModelLimits.map(([_, l]) => l.resetTime))
                     : null;
 
+                const providerId = getAccountProvider(account);
                 const baseInfo = {
                     email: account.email,
+                    provider: providerId,
+                    label: account.label || null,
+                    subscription: account.subscription || { tier: 'unknown', projectId: null },
                     lastUsed: account.lastUsed ? new Date(account.lastUsed).toISOString() : null,
                     modelRateLimits: account.modelRateLimits || {},
                     rateLimitCooldownRemaining: soonestReset ? Math.max(0, soonestReset - Date.now()) : 0
@@ -266,7 +271,7 @@ app.get('/health', async (req, res) => {
 
                 // Skip invalid accounts for quota check
                 if (account.isInvalid) {
-                    const isBanned = account.invalidReason?.toLowerCase().includes('banned') || 
+                    const isBanned = account.invalidReason?.toLowerCase().includes('banned') ||
                                      account.invalidReason?.toLowerCase().includes('terms of service');
                     return {
                         ...baseInfo,
@@ -277,6 +282,27 @@ app.get('/health', async (req, res) => {
                 }
 
                 try {
+                    if (!isAntigravityAccount(account)) {
+                        const { tier, windows, quotas } = await fetchProviderQuota(account, accountManager);
+                        const formattedQuotas = {};
+                        for (const [modelId, info] of Object.entries(quotas)) {
+                            formattedQuotas[modelId] = {
+                                remaining: info.remainingFraction !== null ? `${Math.round(info.remainingFraction * 100)}%` : 'N/A',
+                                remainingFraction: info.remainingFraction,
+                                resetTime: info.resetTime || null
+                            };
+                        }
+                        account.subscription = { tier, projectId: null, detectedAt: Date.now() };
+                        account.quota = { models: quotas, lastChecked: Date.now() };
+                        return {
+                            ...baseInfo,
+                            subscription: account.subscription,
+                            windows,
+                            status: isRateLimited ? 'rate-limited' : 'ok',
+                            models: formattedQuotas
+                        };
+                    }
+
                     const token = await accountManager.getTokenForAccount(account);
                     const projectId = account.subscription?.projectId || null;
                     const quotas = await getModelQuotas(token, projectId);
@@ -372,15 +398,9 @@ app.get('/account-limits', async (req, res) => {
                 try {
                     // Non-Antigravity provider accounts (OpenAI Codex, GitHub Copilot, Anthropic, OpenCode, OpenRouter, etc.)
                     if (!isAntigravityAccount(account)) {
-                        const providerId = getAccountProvider(account);
-                        const provider = getProvider(providerId);
-                        const providerModels = await listProviderModels(account, accountManager);
-                        const quotas = {};
-                        for (const m of providerModels) {
-                            quotas[m.id] = { remainingFraction: 1, resetTime: null };
-                        }
+                        const { tier, windows, quotas } = await fetchProviderQuota(account, accountManager);
                         account.subscription = {
-                            tier: provider?.shortName?.toLowerCase() || providerId,
+                            tier,
                             projectId: null,
                             detectedAt: Date.now()
                         };
@@ -392,6 +412,7 @@ app.get('/account-limits', async (req, res) => {
                             email: account.email,
                             status: 'ok',
                             subscription: account.subscription,
+                            windows,
                             models: quotas
                         };
                     }
