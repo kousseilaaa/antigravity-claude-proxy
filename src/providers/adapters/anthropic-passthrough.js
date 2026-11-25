@@ -5,19 +5,52 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import { CLAUDE_OAUTH_SYSTEM_PREFIX, CLAUDE_OAUTH_BETA_HEADER } from '../auth/claude-oauth.js';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 
 /**
  * Build headers for Anthropic API
  */
-function buildHeaders(apiKey, extraHeaders = {}) {
+function buildHeaders(apiKey, extraHeaders = {}, authMode = 'api-key') {
+    if (authMode === 'bearer') {
+        const betaBase = extraHeaders['anthropic-beta'];
+        const beta = betaBase
+            ? `${betaBase},${CLAUDE_OAUTH_BETA_HEADER}`
+            : CLAUDE_OAUTH_BETA_HEADER;
+        return {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'anthropic-version': ANTHROPIC_VERSION,
+            ...extraHeaders,
+            'anthropic-beta': beta
+        };
+    }
     return {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': ANTHROPIC_VERSION,
         ...extraHeaders
     };
+}
+
+/**
+ * Ensure the system prompt starts with CLAUDE_OAUTH_SYSTEM_PREFIX for Claude Code OAuth.
+ */
+function applyOAuthSystemPrefix(body) {
+    const sys = body.system;
+    if (!sys) {
+        body.system = CLAUDE_OAUTH_SYSTEM_PREFIX;
+    } else if (typeof sys === 'string') {
+        if (!sys.startsWith(CLAUDE_OAUTH_SYSTEM_PREFIX)) {
+            body.system = `${CLAUDE_OAUTH_SYSTEM_PREFIX}\n\n${sys}`;
+        }
+    } else if (Array.isArray(sys)) {
+        const first = sys.find(b => b.type === 'text');
+        if (!first || !first.text.startsWith(CLAUDE_OAUTH_SYSTEM_PREFIX)) {
+            body.system = [{ type: 'text', text: CLAUDE_OAUTH_SYSTEM_PREFIX }, ...sys];
+        }
+    }
 }
 
 /**
@@ -44,13 +77,14 @@ function buildPayload(anthropicRequest, modelId, stream) {
 /**
  * Send non-streaming message to Anthropic API
  */
-export async function sendAnthropicMessage({ baseUrl, apiKey, modelId, anthropicRequest, extraHeaders = {} }) {
+export async function sendAnthropicMessage({ baseUrl, apiKey, modelId, anthropicRequest, extraHeaders = {}, authMode = 'api-key' }) {
     const url = `${baseUrl.replace(/\/+$/, '')}/v1/messages`;
     const body = buildPayload(anthropicRequest, modelId, false);
+    if (authMode === 'bearer') applyOAuthSystemPrefix(body);
 
     const response = await fetch(url, {
         method: 'POST',
-        headers: buildHeaders(apiKey, extraHeaders),
+        headers: buildHeaders(apiKey, extraHeaders, authMode),
         body: JSON.stringify(body)
     });
 
@@ -67,13 +101,14 @@ export async function sendAnthropicMessage({ baseUrl, apiKey, modelId, anthropic
 /**
  * Stream Anthropic SSE events directly from an Anthropic-compatible endpoint
  */
-export async function* streamAnthropicMessage({ baseUrl, apiKey, modelId, anthropicRequest, extraHeaders = {} }) {
+export async function* streamAnthropicMessage({ baseUrl, apiKey, modelId, anthropicRequest, extraHeaders = {}, authMode = 'api-key' }) {
     const url = `${baseUrl.replace(/\/+$/, '')}/v1/messages`;
     const body = buildPayload(anthropicRequest, modelId, true);
+    if (authMode === 'bearer') applyOAuthSystemPrefix(body);
 
     const response = await fetch(url, {
         method: 'POST',
-        headers: buildHeaders(apiKey, extraHeaders),
+        headers: buildHeaders(apiKey, extraHeaders, authMode),
         body: JSON.stringify(body)
     });
 

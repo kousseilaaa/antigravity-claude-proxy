@@ -395,13 +395,19 @@ document.addEventListener('alpine:init', () => {
         getModelFamily(modelId) {
             const lower = modelId.toLowerCase();
             if (lower.includes('claude')) return 'claude';
-            if (lower.includes('gemini')) return 'gemini';
+            if (lower.includes('gemini') || lower.includes('glm')) return 'gemini';
             if (
                 lower.includes('gpt-') ||
                 lower.includes('codex') ||
                 lower.includes('openai/') ||
                 /(^|\/)o[134](-|$)/.test(lower)
             ) return 'openai';
+            if (lower.includes('qwen') || lower.includes('qwq')) return 'qwen';
+            if (lower.includes('kimi') || lower.includes('moonshot')) return 'kimi';
+            if (lower.includes('minimax') || lower.includes('m2.5') || lower.includes('m1.')) return 'minimax';
+            if (lower.includes('grok')) return 'grok';
+            if (lower.includes('deepseek')) return 'deepseek';
+            if (lower.includes('llama') || lower.includes('mistral') || lower.includes('devstral') || lower.includes('codestral')) return 'other';
             return 'other';
         },
 

@@ -11,6 +11,19 @@
 import assert from 'assert';
 import http from 'http';
 import {
+    getClaudeAuthorizationUrl,
+    parseClaudeCodeInput
+} from '../src/providers/auth/claude-oauth.js';
+import {
+    getGeminiCliAuthorizationUrl
+} from '../src/providers/auth/gemini-cli-oauth.js';
+import {
+    getOpenRouterAuthorizationUrl
+} from '../src/providers/auth/openrouter-oauth.js';
+import {
+    decodeAwsEventStreamFrame
+} from '../src/providers/adapters/kiro.js';
+import {
     listProviders,
     getProvider,
     parseModelIdentifier,
@@ -347,5 +360,112 @@ await runTest('Same email coexists across multiple providers without collision',
     }
 });
 
+
+// 5. OAuth Provider Registry – all 11 OAuth providers with authType & protocol
+await runTest('All 11 OAuth providers exist in PROVIDERS with correct authType and protocol', () => {
+    const expected = [
+        { id: 'antigravity',       authType: 'oauth',        protocol: 'antigravity'       },
+        { id: 'openai-codex',      authType: 'oauth',        protocol: 'openai-responses'  },
+        { id: 'github-copilot',    authType: 'device-code',  protocol: 'openai-chat'       },
+        { id: 'anthropic-oauth',   authType: 'oauth-manual', protocol: 'anthropic'         },
+        { id: 'gemini-cli',        authType: 'oauth',        protocol: 'openai-chat'       },
+        { id: 'qwen-code',         authType: 'device-code',  protocol: 'openai-chat'       },
+        { id: 'openrouter-oauth',  authType: 'oauth',        protocol: 'openai-chat'       },
+        { id: 'kimi-code',         authType: 'device-code',  protocol: 'openai-chat'       },
+        { id: 'opencode-oauth',    authType: 'device-code',  protocol: 'openai-chat'       },
+        { id: 'kilo',              authType: 'device-code',  protocol: 'openai-chat'       },
+        { id: 'kiro',              authType: 'device-code',  protocol: 'kiro'              },
+    ];
+    for (const { id, authType, protocol } of expected) {
+        const p = getProvider(id);
+        assert.ok(p, `Missing provider: ${id}`);
+        assert.strictEqual(p.authType, authType, `${id}: expected authType=${authType}, got ${p.authType}`);
+        assert.strictEqual(p.protocol, protocol, `${id}: expected protocol=${protocol}, got ${p.protocol}`);
+    }
+});
+
+// 6. Claude OAuth PKCE URL generation and code parsing
+await runTest('getClaudeAuthorizationUrl returns claude.ai URL with S256 PKCE & parseClaudeCodeInput parses code#state', () => {
+    const { url, verifier, state } = getClaudeAuthorizationUrl();
+    const parsed = new URL(url);
+    assert.ok(parsed.hostname === 'claude.ai', `Expected claude.ai hostname, got ${parsed.hostname}`);
+    assert.ok(parsed.pathname.includes('/oauth/authorize'), `Expected /oauth/authorize path, got ${parsed.pathname}`);
+    assert.strictEqual(parsed.searchParams.get('code_challenge_method'), 'S256');
+    assert.ok(parsed.searchParams.get('code_challenge'), 'Missing code_challenge param');
+    assert.strictEqual(parsed.searchParams.get('state'), state);
+    assert.ok(verifier, 'Missing verifier');
+
+    const result = parseClaudeCodeInput('abc123#state456');
+    assert.deepStrictEqual(result, { code: 'abc123', state: 'state456' });
+});
+
+// 7. Gemini CLI OAuth PKCE URL generation
+await runTest('getGeminiCliAuthorizationUrl returns accounts.google.com URL with S256 PKCE & localhost:51122/oauth2callback', () => {
+    const { url, verifier, state, redirectUri } = getGeminiCliAuthorizationUrl();
+    const parsed = new URL(url);
+    assert.ok(parsed.hostname === 'accounts.google.com', `Expected accounts.google.com, got ${parsed.hostname}`);
+    assert.strictEqual(parsed.searchParams.get('code_challenge_method'), 'S256');
+    assert.ok(parsed.searchParams.get('code_challenge'), 'Missing code_challenge param');
+    assert.strictEqual(parsed.searchParams.get('state'), state);
+    assert.ok(verifier, 'Missing verifier');
+    assert.ok(redirectUri.includes('localhost:51122'), `Expected localhost:51122 in redirectUri, got ${redirectUri}`);
+    assert.ok(redirectUri.includes('/oauth2callback'), `Expected /oauth2callback in redirectUri, got ${redirectUri}`);
+});
+
+// 8. OpenRouter OAuth PKCE URL generation
+await runTest('getOpenRouterAuthorizationUrl returns openrouter.ai/auth URL with S256 PKCE & callback_url param', () => {
+    const { url, verifier, state, redirectUri } = getOpenRouterAuthorizationUrl();
+    const parsed = new URL(url);
+    assert.ok(parsed.hostname === 'openrouter.ai', `Expected openrouter.ai hostname, got ${parsed.hostname}`);
+    assert.ok(parsed.pathname.includes('/auth'), `Expected /auth in path, got ${parsed.pathname}`);
+    assert.strictEqual(parsed.searchParams.get('code_challenge_method'), 'S256');
+    assert.ok(parsed.searchParams.get('code_challenge'), 'Missing code_challenge param');
+    assert.ok(parsed.searchParams.get('callback_url'), 'Missing callback_url param');
+    assert.strictEqual(parsed.searchParams.get('state'), state);
+    assert.ok(verifier, 'Missing verifier');
+});
+
+// 9. AWS EventStream frame decoder
+await runTest('decodeAwsEventStreamFrame decodes synthetic binary frame and returns null for truncated input', () => {
+    // Build a synthetic AWS EventStream frame with one header `:event-type` = `assistantResponseEvent`
+    // and payload `{"assistantResponseEvent":{"content":"hello"}}`
+    const headerName = ':event-type';
+    const headerValue = 'assistantResponseEvent';
+    const payload = Buffer.from(JSON.stringify({ assistantResponseEvent: { content: 'hello' } }));
+
+    // Encode header: nameLen(1) + name + valueType(1, =7 for string) + valueLen(2) + value
+    const headerNameBuf = Buffer.from(headerName);
+    const headerValueBuf = Buffer.from(headerValue);
+    const headerBuf = Buffer.alloc(1 + headerNameBuf.length + 1 + 2 + headerValueBuf.length);
+    let hp = 0;
+    headerBuf.writeUInt8(headerNameBuf.length, hp); hp += 1;
+    headerNameBuf.copy(headerBuf, hp); hp += headerNameBuf.length;
+    headerBuf.writeUInt8(7, hp); hp += 1;  // valueType = string
+    headerBuf.writeUInt16BE(headerValueBuf.length, hp); hp += 2;
+    headerValueBuf.copy(headerBuf, hp);
+
+    // Frame layout: totalLength(4) + headersLength(4) + preludeCRC(4) + headers + payload + messageCRC(4)
+    const totalLength = 4 + 4 + 4 + headerBuf.length + payload.length + 4;
+    const frame = Buffer.alloc(totalLength);
+    let fp = 0;
+    frame.writeUInt32BE(totalLength, fp); fp += 4;
+    frame.writeUInt32BE(headerBuf.length, fp); fp += 4;
+    frame.writeUInt32BE(0, fp); fp += 4;  // preludeCRC (skipped by decoder)
+    headerBuf.copy(frame, fp); fp += headerBuf.length;
+    payload.copy(frame, fp); fp += payload.length;
+    frame.writeUInt32BE(0, fp);  // messageCRC (skipped by decoder)
+
+    const result = decodeAwsEventStreamFrame(frame, 0);
+    assert.ok(result !== null, 'Expected decoded frame, got null');
+    assert.strictEqual(result.consumed, totalLength);
+    assert.strictEqual(result.frame.headers[':event-type'], 'assistantResponseEvent');
+    assert.deepStrictEqual(result.frame.payload, { assistantResponseEvent: { content: 'hello' } });
+
+    // Truncated buffer (too short for prelude) must return null
+    assert.strictEqual(decodeAwsEventStreamFrame(Buffer.alloc(8), 0), null);
+    // Truncated buffer (prelude reads totalLength > available bytes) must return null
+    const shortFrame = frame.slice(0, totalLength - 1);
+    assert.strictEqual(decodeAwsEventStreamFrame(shortFrame, 0), null);
+});
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

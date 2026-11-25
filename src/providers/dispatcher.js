@@ -2,7 +2,9 @@
  * Multi-Provider Dispatcher
  * Routes Anthropic Messages API requests to the appropriate provider account
  * (Antigravity, OpenAI Codex, GitHub Copilot, Anthropic API, OpenAI API, OpenCode Zen,
- * OpenRouter, Google AI Studio, DeepSeek, Groq, xAI, Mistral, Custom),
+ * OpenRouter, Google AI Studio, DeepSeek, Groq, xAI, Mistral, Custom,
+ * Anthropic OAuth, Gemini CLI, Qwen Code, OpenRouter OAuth, Kimi Code,
+ * OpenCode OAuth, Kilo, Kiro, MiniMax, Z.AI),
  * discovers models across all providers, and tests account connectivity.
  */
 
@@ -20,8 +22,75 @@ import {
 import { sendAnthropicMessage, streamAnthropicMessage } from './adapters/anthropic-passthrough.js';
 import { sendOpenAIChatMessage, streamOpenAIChatMessage } from './adapters/openai-chat.js';
 import { sendCodexResponsesMessage, streamCodexResponsesMessage } from './adapters/openai-responses.js';
+import { sendKiroMessage, streamKiroMessage } from './adapters/kiro.js';
 import { COPILOT_HEADERS } from './auth/github-copilot-oauth.js';
+import { OPENCODE_OAUTH, KIRO_OAUTH } from './auth/device-oauth.js';
 import { logger } from '../utils/logger.js';
+import crypto from 'crypto';
+
+// Stable per-process session ID for OpenCode Zen providers: ses_<12 lowercase hex><14 alnum>
+const _OPENCODE_SESSION_ID = (() => {
+    const hex = crypto.randomBytes(6).toString('hex'); // 12 hex chars
+    const alnum = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let suffix = '';
+    const rnd = crypto.randomBytes(14);
+    for (let i = 0; i < 14; i++) suffix += alnum[rnd[i] % alnum.length];
+    return `ses_${hex}${suffix}`;
+})();
+
+/**
+ * Generate or return the stable per-process OpenCode session ID.
+ * Format: ses_<12 lowercase hex><14 alnum>
+ */
+function buildOpenCodeSessionId() {
+    return _OPENCODE_SESSION_ID;
+}
+
+/**
+ * Build provider-specific extra request headers.
+ * Merges provider.extraHeaders from the registry when present.
+ *
+ * @param {string} providerId
+ * @param {Object} account
+ * @param {Object|null} provider
+ * @returns {Record<string, string>}
+ */
+function getProviderRequestHeaders(providerId, account, provider) {
+    let headers = {};
+
+    switch (providerId) {
+        case 'opencode-oauth':
+            headers['User-Agent'] = OPENCODE_OAUTH.userAgent;
+            headers['x-opencode-session'] = buildOpenCodeSessionId();
+            if (account?.extra?.orgId) {
+                headers['x-opencode-org-id'] = account.extra.orgId;
+            }
+            break;
+        case 'opencode':
+            headers['User-Agent'] = OPENCODE_OAUTH.userAgent;
+            headers['x-opencode-session'] = buildOpenCodeSessionId();
+            break;
+        case 'kilo':
+            headers['User-Agent'] = 'opencode-kilo-provider';
+            headers['X-KILOCODE-EDITORNAME'] = 'Kilo CLI';
+            break;
+        case 'kimi-code':
+            headers['User-Agent'] = 'KimiCLI/1.13.0';
+            break;
+        case 'github-copilot':
+            Object.assign(headers, COPILOT_HEADERS);
+            break;
+        default:
+            break;
+    }
+
+    // Merge static extraHeaders from provider definition
+    if (provider?.extraHeaders) {
+        Object.assign(headers, provider.extraHeaders);
+    }
+
+    return headers;
+}
 
 /**
  * Determine which provider should handle a requested model string.
@@ -136,11 +205,16 @@ export async function listProviderModels(account, accountManager) {
     if (modelsUrl) {
         try {
             const token = await accountManager.getTokenForAccount(account);
-            const headers = { 'Accept': 'application/json', ...(provider.extraHeaders || {}) };
+            const extraHeaders = getProviderRequestHeaders(providerId, account, provider);
+            const headers = { 'Accept': 'application/json', ...extraHeaders };
 
             if (providerId === 'anthropic') {
                 headers['x-api-key'] = token;
                 headers['anthropic-version'] = '2023-06-01';
+            } else if (providerId === 'anthropic-oauth') {
+                headers['Authorization'] = `Bearer ${token}`;
+                headers['anthropic-version'] = '2023-06-01';
+                headers['anthropic-beta'] = 'oauth-2025-04-20,claude-code-20250219';
             } else if (providerId === 'github-copilot') {
                 headers['Authorization'] = `Bearer ${token}`;
                 Object.assign(headers, COPILOT_HEADERS);
@@ -209,7 +283,7 @@ function formatWindowLabel(seconds) {
  * Supports:
  *  - openai-codex: https://chatgpt.com/backend-api/wham/usage (primary/secondary rate_limit windows + plan_type)
  *  - github-copilot: https://api.github.com/copilot_internal/user (quota_snapshots + copilot_plan)
- *  - openrouter: https://openrouter.ai/api/v1/auth/key (credit limit & remaining)
+ *  - openrouter / openrouter-oauth: https://openrouter.ai/api/v1/auth/key (credit limit & remaining)
  *  - all other providers: derives status from active account.modelRateLimits
  *
  * @param {Object} account
@@ -295,7 +369,7 @@ export async function fetchProviderQuota(account, accountManager) {
                         }
                     }
                 }
-            } else if (providerId === 'openrouter' && token) {
+            } else if ((providerId === 'openrouter' || providerId === 'openrouter-oauth') && token) {
                 const res = await fetch('https://openrouter.ai/api/v1/auth/key', {
                     headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
                     signal: controller.signal
@@ -309,6 +383,8 @@ export async function fetchProviderQuota(account, accountManager) {
                     }
                 }
             }
+            // anthropic-oauth, gemini-cli, qwen-code, kimi-code, opencode-oauth, kilo, kiro:
+            // No live quota endpoint; fall through to modelRateLimits-derived quotas below.
         } finally {
             clearTimeout(timer);
         }
@@ -372,14 +448,12 @@ export async function sendProviderMessage(providerId, modelId, anthropicRequest,
             const protocol = getAccountProtocol(account);
             const baseUrl = getAccountBaseUrl(account);
             const provider = getProvider(providerId);
-            const extraHeaders = {
-                ...(provider?.extraHeaders || {}),
-                ...(providerId === 'github-copilot' ? COPILOT_HEADERS : {})
-            };
+            const extraHeaders = getProviderRequestHeaders(providerId, account, provider);
 
             let result;
             if (protocol === PROTOCOLS.ANTHROPIC) {
-                result = await sendAnthropicMessage({ baseUrl, apiKey: token, modelId, anthropicRequest, extraHeaders });
+                const authMode = providerId === 'anthropic-oauth' ? 'bearer' : 'api-key';
+                result = await sendAnthropicMessage({ baseUrl, apiKey: token, modelId, anthropicRequest, extraHeaders, authMode });
             } else if (protocol === PROTOCOLS.OPENAI_RESPONSES) {
                 result = await sendCodexResponsesMessage({
                     baseUrl,
@@ -388,7 +462,12 @@ export async function sendProviderMessage(providerId, modelId, anthropicRequest,
                     modelId,
                     anthropicRequest
                 });
+            } else if (protocol === PROTOCOLS.KIRO) {
+                const profileArn = account.extra?.oauthMeta?.profileArn || KIRO_OAUTH.builderIdProfileArn;
+                const region = account.extra?.oauthMeta?.region || 'us-east-1';
+                result = await sendKiroMessage({ baseUrl, accessToken: token, modelId, anthropicRequest, profileArn, region });
             } else {
+                // OPENAI_CHAT (and any unrecognized protocol defaults to openai-chat)
                 const effectiveBaseUrl = providerId === 'github-copilot'
                     ? (account.extra?.copilotBaseUrl || baseUrl)
                     : baseUrl;
@@ -439,14 +518,12 @@ export async function* streamProviderMessage(providerId, modelId, anthropicReque
             const protocol = getAccountProtocol(account);
             const baseUrl = getAccountBaseUrl(account);
             const provider = getProvider(providerId);
-            const extraHeaders = {
-                ...(provider?.extraHeaders || {}),
-                ...(providerId === 'github-copilot' ? COPILOT_HEADERS : {})
-            };
+            const extraHeaders = getProviderRequestHeaders(providerId, account, provider);
 
             let stream;
             if (protocol === PROTOCOLS.ANTHROPIC) {
-                stream = streamAnthropicMessage({ baseUrl, apiKey: token, modelId, anthropicRequest, extraHeaders });
+                const authMode = providerId === 'anthropic-oauth' ? 'bearer' : 'api-key';
+                stream = streamAnthropicMessage({ baseUrl, apiKey: token, modelId, anthropicRequest, extraHeaders, authMode });
             } else if (protocol === PROTOCOLS.OPENAI_RESPONSES) {
                 stream = streamCodexResponsesMessage({
                     baseUrl,
@@ -455,7 +532,12 @@ export async function* streamProviderMessage(providerId, modelId, anthropicReque
                     modelId,
                     anthropicRequest
                 });
+            } else if (protocol === PROTOCOLS.KIRO) {
+                const profileArn = account.extra?.oauthMeta?.profileArn || KIRO_OAUTH.builderIdProfileArn;
+                const region = account.extra?.oauthMeta?.region || 'us-east-1';
+                stream = streamKiroMessage({ baseUrl, accessToken: token, modelId, anthropicRequest, profileArn, region });
             } else {
+                // OPENAI_CHAT (and any unrecognized protocol defaults to openai-chat)
                 const effectiveBaseUrl = providerId === 'github-copilot'
                     ? (account.extra?.copilotBaseUrl || baseUrl)
                     : baseUrl;

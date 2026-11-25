@@ -141,11 +141,16 @@
                                       :class="{
                                           'bg-purple-500/15 text-purple-300 border-purple-500/30': !acc.provider || acc.provider === 'antigravity',
                                           'bg-emerald-500/15 text-emerald-300 border-emerald-500/30': acc.provider === 'openai-codex' || acc.provider === 'openai',
-                                          'bg-sky-500/15 text-sky-300 border-sky-500/30': acc.provider === 'github-copilot' || acc.provider === 'deepseek' || acc.provider === 'google-ai',
-                                          'bg-cyan-500/15 text-cyan-300 border-cyan-500/30': acc.provider === 'opencode',
-                                          'bg-amber-500/15 text-amber-300 border-amber-500/30': acc.provider === 'anthropic' || acc.provider === 'mistral',
-                                          'bg-indigo-500/15 text-indigo-300 border-indigo-500/30': acc.provider === 'openrouter',
-                                          'bg-orange-500/15 text-orange-300 border-orange-500/30': acc.provider === 'groq',
+                                          'bg-sky-500/15 text-sky-300 border-sky-500/30': acc.provider === 'github-copilot' || acc.provider === 'google-ai' || acc.provider === 'kimi-code',
+                                          'bg-cyan-500/15 text-cyan-300 border-cyan-500/30': acc.provider === 'opencode' || acc.provider === 'opencode-oauth',
+                                          'bg-amber-500/15 text-amber-300 border-amber-500/30': acc.provider === 'anthropic' || acc.provider === 'mistral' || acc.provider === 'anthropic-oauth',
+                                          'bg-indigo-500/15 text-indigo-300 border-indigo-500/30': acc.provider === 'openrouter' || acc.provider === 'openrouter-oauth',
+                                          'bg-orange-500/15 text-orange-300 border-orange-500/30': acc.provider === 'groq' || acc.provider === 'kilo',
+                                          'bg-blue-500/15 text-blue-300 border-blue-500/30': acc.provider === 'deepseek' || acc.provider === 'gemini-cli',
+                                          'bg-violet-500/15 text-violet-300 border-violet-500/30': acc.provider === 'qwen-code',
+                                          'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30': acc.provider === 'minimax',
+                                          'bg-teal-500/15 text-teal-300 border-teal-500/30': acc.provider === 'zai',
+                                          'bg-rose-500/15 text-rose-300 border-rose-500/30': acc.provider === 'kiro',
                                           'bg-gray-500/15 text-gray-300 border-gray-500/30': acc.provider === 'xai' || acc.provider === 'custom'
                                       }"
                                       x-text="acc.provider || 'antigravity'">

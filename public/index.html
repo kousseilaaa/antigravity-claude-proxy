@@ -305,12 +305,18 @@
                             :class="selectedProviderId === p.id ? 'bg-space-850 border-neon-purple text-white' : 'bg-space-950/60 border-space-border text-gray-400 hover:text-white hover:border-gray-600'"
                             @click="selectProvider(p.id)">
                             <div class="text-xs font-semibold truncate" x-text="p.shortName"></div>
-                            <div class="text-[10px] text-gray-500 truncate mt-0.5" x-text="p.authType === 'device-code' ? 'Device Code' : 'OAuth PKCE'"></div>
+                            <div class="text-[10px] mt-0.5 truncate"
+                                 :class="p.authType === 'device-code' ? 'text-sky-400' : p.authType === 'oauth-manual' ? 'text-amber-400' : 'text-emerald-400'"
+                                 x-text="p.authType === 'device-code' ? 'Device Code' : p.authType === 'oauth-manual' ? 'Code Paste' : 'OAuth PKCE'">
+                            </div>
                         </button>
                     </template>
                 </div>
 
-                <!-- 1. Google Antigravity OAuth -->
+                <!-- Provider description -->
+                <p class="text-xs text-gray-400 leading-relaxed" x-show="selectedProvider && selectedProviderId !== 'antigravity'" x-text="selectedProvider?.description"></p>
+
+                <!-- 1. Google Antigravity OAuth (special: existing /api/auth/url flow) -->
                 <div x-show="selectedProviderId === 'antigravity'" class="flex flex-col gap-3">
                     <p class="text-xs text-gray-400 leading-relaxed" x-text="$store.global.t('connectGoogleDesc')">
                         Connect a Google account to proxy Claude &amp; Gemini models via Antigravity Cloud Code.
@@ -352,60 +358,95 @@
                     </details>
                 </div>
 
-                <!-- 2. OpenAI Codex (ChatGPT) OAuth -->
-                <div x-show="selectedProviderId === 'openai-codex'" class="flex flex-col gap-3">
-                    <p class="text-xs text-gray-400 leading-relaxed">
-                        Sign in with your ChatGPT Plus, Pro, or Team account via OpenAI OAuth PKCE to use GPT-5.x Codex, o3, and o4-mini models through this proxy.
-                    </p>
+                <!-- 2. Generic OAuth PKCE (openai-codex, gemini-cli, openrouter-oauth) -->
+                <!-- authType === 'oauth' and id !== 'antigravity' -->
+                <div x-show="selectedProvider?.authType === 'oauth' && selectedProviderId !== 'antigravity'" class="flex flex-col gap-3">
                     <button type="button"
                         class="btn bg-emerald-600 hover:bg-emerald-500 border-none text-white flex items-center justify-center gap-2 h-11"
-                        @click="startCodexOAuth"
+                        @click="startGenericOAuth"
                         :disabled="submitting">
-                        <span x-text="codexPolling ? 'Waiting for OpenAI login...' : 'Connect OpenAI / ChatGPT Account'"></span>
+                        <span x-show="oauthPolling" class="loading loading-spinner loading-xs"></span>
+                        <span x-text="oauthPolling ? ('Waiting for ' + selectedProvider?.name + ' login...') : ('Connect ' + selectedProvider?.name + ' Account')"></span>
                     </button>
 
-                    <template x-if="codexAuthUrl">
+                    <template x-if="oauthAuthUrl">
                         <div class="p-3 bg-space-950 rounded-md border border-space-border text-xs flex flex-col gap-2">
-                            <div class="text-gray-400">If auto-redirect fails, copy the URL or paste the localhost:1455 callback URL below:</div>
+                            <div class="text-gray-400">If auto-redirect fails, copy the OAuth URL or paste the localhost callback URL below:</div>
                             <div class="flex items-center gap-2">
-                                <input type="text" readonly :value="codexAuthUrl" class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
-                                <button type="button" class="btn btn-xs btn-ghost text-gray-400 hover:text-white" @click="copyText(codexAuthUrl, 'OpenAI OAuth URL copied')">Copy</button>
+                                <input type="text" readonly :value="oauthAuthUrl" class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
+                                <button type="button" class="btn btn-xs btn-ghost text-gray-400 hover:text-white" @click="copyText(oauthAuthUrl, 'OAuth URL copied')">Copy</button>
                             </div>
                             <div class="flex items-center gap-2">
-                                <input type="text" x-model="codexCallbackInput" placeholder="http://localhost:1455/auth/callback?code=..." class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
-                                <button type="button" class="btn btn-xs btn-success" @click="completeCodexManualAuth" :disabled="!codexCallbackInput || submitting">Complete</button>
+                                <input type="text" x-model="oauthCallbackInput" placeholder="http://localhost:.../auth/callback?code=..." class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
+                                <button type="button" class="btn btn-xs btn-success" @click="completeGenericOAuth" :disabled="!oauthCallbackInput || submitting">Complete</button>
                             </div>
                         </div>
                     </template>
                 </div>
 
-                <!-- 3. GitHub Copilot Device Flow -->
-                <div x-show="selectedProviderId === 'github-copilot'" class="flex flex-col gap-3">
-                    <p class="text-xs text-gray-400 leading-relaxed">
-                        Connect your GitHub Copilot subscription using GitHub's Device Code flow. Works on any machine including headless servers.
-                    </p>
+                <!-- 3. OAuth Manual / Code Paste (anthropic-oauth: authType === 'oauth-manual') -->
+                <div x-show="selectedProvider?.authType === 'oauth-manual'" class="flex flex-col gap-3">
+                    <!-- Step 1: Get auth URL -->
+                    <div class="p-3 bg-space-950 rounded-md border border-space-border text-xs flex flex-col gap-2">
+                        <div class="text-gray-400 font-medium">Step 1 — Open the sign-in page</div>
+                        <template x-if="!oauthManualAuthUrl">
+                            <button type="button"
+                                class="btn btn-sm bg-amber-600 hover:bg-amber-500 border-none text-white self-start"
+                                @click="startOAuthManual"
+                                :disabled="submitting">
+                                <span x-show="submitting" class="loading loading-spinner loading-xs"></span>
+                                <span x-text="'Open ' + (selectedProvider?.name || 'Sign-In') + ' URL'"></span>
+                            </button>
+                        </template>
+                        <template x-if="oauthManualAuthUrl">
+                            <div class="flex flex-col gap-2">
+                                <div class="flex items-center gap-2">
+                                    <input type="text" readonly :value="oauthManualAuthUrl" class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
+                                    <button type="button" class="btn btn-xs btn-ghost text-gray-400 hover:text-white" @click="copyText(oauthManualAuthUrl, 'Auth URL copied')">Copy</button>
+                                </div>
+                                <div class="text-gray-500">URL opened in new tab. After authorizing, copy the <code class="text-amber-400">code#state</code> from the redirect URL.</div>
+                            </div>
+                        </template>
+                    </div>
+                    <!-- Step 2: Paste code#state -->
+                    <div class="p-3 bg-space-950 rounded-md border border-space-border text-xs flex flex-col gap-2" x-show="oauthManualAuthUrl">
+                        <div class="text-gray-400 font-medium">Step 2 — Paste the <code class="text-amber-400">code#state</code> from the redirect</div>
+                        <div class="flex items-center gap-2">
+                            <input type="text" x-model="oauthManualCallbackInput"
+                                placeholder="Paste code#state or full redirect URL"
+                                class="input input-xs input-bordered flex-1 bg-space-850 border-space-border text-gray-300 font-mono">
+                            <button type="button" class="btn btn-xs btn-success"
+                                @click="completeOAuthManual"
+                                :disabled="!oauthManualCallbackInput || submitting">Connect</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 4. Generic Device Code (github-copilot, qwen-code, kimi-code, opencode-oauth, kilo, kiro) -->
+                <div x-show="selectedProvider?.authType === 'device-code'" class="flex flex-col gap-3">
                     <button type="button"
-                        x-show="!copilotUserCode"
+                        x-show="!deviceUserCode"
                         class="btn bg-sky-600 hover:bg-sky-500 border-none text-white h-11"
-                        @click="startCopilotAuth"
+                        @click="startDeviceAuth"
                         :disabled="submitting">
-                        Start GitHub Copilot Login
+                        <span x-show="submitting" class="loading loading-spinner loading-xs"></span>
+                        <span x-text="'Start ' + (selectedProvider?.name || 'Provider') + ' Login'"></span>
                     </button>
 
-                    <template x-if="copilotUserCode">
+                    <template x-if="deviceUserCode">
                         <div class="p-4 bg-space-950 rounded-lg border border-sky-500/40 flex flex-col items-center gap-3 text-center">
                             <div class="text-xs text-gray-400">1. Copy this verification code:</div>
                             <div class="flex items-center gap-2">
-                                <code class="text-2xl font-mono font-bold tracking-widest text-sky-400 bg-space-900 px-4 py-2 rounded border border-space-border" x-text="copilotUserCode"></code>
-                                <button type="button" class="btn btn-sm btn-ghost text-gray-300" @click="copyText(copilotUserCode, 'Code copied!')">Copy</button>
+                                <code class="text-2xl font-mono font-bold tracking-widest text-sky-400 bg-space-900 px-4 py-2 rounded border border-space-border" x-text="deviceUserCode"></code>
+                                <button type="button" class="btn btn-sm btn-ghost text-gray-300" @click="copyText(deviceUserCode, 'Code copied!')">Copy</button>
                             </div>
-                            <div class="text-xs text-gray-400">2. Authorize at GitHub:</div>
-                            <a :href="copilotVerificationUri" target="_blank" rel="noopener noreferrer"
+                            <div class="text-xs text-gray-400" x-text="'2. Authorize at ' + (selectedProvider?.name || 'Provider') + ':'"></div>
+                            <a :href="deviceVerificationUri" target="_blank" rel="noopener noreferrer"
                                 class="btn btn-sm bg-sky-600 hover:bg-sky-500 border-none text-white"
-                                x-text="'Open ' + copilotVerificationUri"></a>
-                            <div class="text-xs text-sky-300 flex items-center gap-2 mt-1" x-show="copilotStatusMsg">
-                                <span x-show="copilotPolling" class="loading loading-spinner loading-xs"></span>
-                                <span x-text="copilotStatusMsg"></span>
+                                x-text="'Open ' + deviceVerificationUri"></a>
+                            <div class="text-xs text-sky-300 flex items-center gap-2 mt-1" x-show="deviceStatusMsg">
+                                <span x-show="devicePolling" class="loading loading-spinner loading-xs"></span>
+                                <span x-text="deviceStatusMsg"></span>
                             </div>
                         </div>
                     </template>

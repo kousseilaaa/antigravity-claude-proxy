@@ -6,6 +6,7 @@
 
 export const AUTH_TYPES = {
     OAUTH: 'oauth',
+    OAUTH_MANUAL: 'oauth-manual',
     DEVICE_CODE: 'device-code',
     API_KEY: 'api-key'
 };
@@ -14,7 +15,8 @@ export const PROTOCOLS = {
     ANTIGRAVITY: 'antigravity',
     ANTHROPIC: 'anthropic',
     OPENAI_CHAT: 'openai-chat',
-    OPENAI_RESPONSES: 'openai-responses'
+    OPENAI_RESPONSES: 'openai-responses',
+    KIRO: 'kiro'
 };
 
 export const PROVIDERS = {
@@ -267,6 +269,187 @@ export const PROVIDERS = {
         allowCustomBaseUrl: true,
         allowProtocolChoice: true,
         defaultModels: []
+    },
+    'anthropic-oauth': {
+        id: 'anthropic-oauth',
+        name: 'Claude Pro/Max (OAuth)',
+        shortName: 'Claude OAuth',
+        category: 'oauth',
+        authType: AUTH_TYPES.OAUTH_MANUAL,
+        protocol: PROTOCOLS.ANTHROPIC,
+        description: 'Connect your Claude Pro/Max account via OAuth PKCE (hosted callback, paste code)',
+        badgeColor: 'amber',
+        defaultBaseUrl: 'https://api.anthropic.com',
+        modelsEndpoint: 'https://api.anthropic.com/v1/models',
+        defaultModels: [
+            { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
+            { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+            { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5' },
+            { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
+            { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet' },
+            { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' }
+        ]
+    },
+    'gemini-cli': {
+        id: 'gemini-cli',
+        name: 'Gemini CLI (Google)',
+        shortName: 'Gemini CLI',
+        category: 'oauth',
+        authType: AUTH_TYPES.OAUTH,
+        protocol: PROTOCOLS.OPENAI_CHAT,
+        description: 'Connect via Google Gemini CLI OAuth PKCE (auto browser callback)',
+        badgeColor: 'blue',
+        defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        modelsEndpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/models',
+        defaultModels: [
+            { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+            { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+            { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+            { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite' }
+        ]
+    },
+    'qwen-code': {
+        id: 'qwen-code',
+        name: 'Qwen Code (Alibaba)',
+        shortName: 'Qwen Code',
+        category: 'oauth',
+        authType: AUTH_TYPES.DEVICE_CODE,
+        protocol: PROTOCOLS.OPENAI_CHAT,
+        description: 'Connect your Alibaba Qwen Code account via Device Code + PKCE',
+        badgeColor: 'violet',
+        defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        modelsEndpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/models',
+        defaultModels: [
+            { id: 'qwen3-coder-plus', name: 'Qwen3 Coder Plus' },
+            { id: 'qwen3-coder', name: 'Qwen3 Coder' },
+            { id: 'qwen3-235b-a22b', name: 'Qwen3 235B A22B' },
+            { id: 'qwen-max', name: 'Qwen Max' },
+            { id: 'qwen-plus', name: 'Qwen Plus' }
+        ]
+    },
+    'openrouter-oauth': {
+        id: 'openrouter-oauth',
+        name: 'OpenRouter (OAuth)',
+        shortName: 'OpenRouter OAuth',
+        category: 'oauth',
+        authType: AUTH_TYPES.OAUTH,
+        protocol: PROTOCOLS.OPENAI_CHAT,
+        description: 'Connect via OpenRouter OAuth PKCE (exchanges for API key on success)',
+        badgeColor: 'indigo',
+        defaultBaseUrl: 'https://openrouter.ai/api/v1',
+        modelsEndpoint: 'https://openrouter.ai/api/v1/models',
+        defaultModels: [
+            { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4 (OpenRouter)' },
+            { id: 'anthropic/claude-opus-4', name: 'Claude Opus 4 (OpenRouter)' },
+            { id: 'openai/gpt-4.1', name: 'GPT-4.1 (OpenRouter)' },
+            { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro (OpenRouter)' },
+            { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (OpenRouter)' },
+            { id: 'qwen/qwen3-coder', name: 'Qwen3 Coder (OpenRouter)' }
+        ]
+    },
+    'kimi-code': {
+        id: 'kimi-code',
+        name: 'Kimi Code (Moonshot)',
+        shortName: 'Kimi Code',
+        category: 'oauth',
+        authType: AUTH_TYPES.DEVICE_CODE,
+        protocol: PROTOCOLS.OPENAI_CHAT,
+        description: 'Connect your Kimi Code account via Device Code OAuth',
+        badgeColor: 'sky',
+        defaultBaseUrl: 'https://api.kimi.com/coding/v1',
+        modelsEndpoint: 'https://api.kimi.com/coding/v1/models',
+        defaultModels: [
+            { id: 'kimi-k2.5', name: 'Kimi K2.5' },
+            { id: 'kimi-k1.5-long', name: 'Kimi K1.5 Long' },
+            { id: 'moonshot-v1-32k', name: 'Moonshot v1 32K' }
+        ]
+    },
+    'opencode-oauth': {
+        id: 'opencode-oauth',
+        name: 'OpenCode Zen (OAuth)',
+        shortName: 'OpenCode OAuth',
+        category: 'oauth',
+        authType: AUTH_TYPES.DEVICE_CODE,
+        protocol: PROTOCOLS.OPENAI_CHAT,
+        description: 'Connect your OpenCode Zen account via Device Code OAuth (Console)',
+        badgeColor: 'cyan',
+        defaultBaseUrl: 'https://opencode.ai/inference/openai/v1',
+        modelsEndpoint: 'https://opencode.ai/inference/openai/v1/models',
+        defaultModels: [
+            { id: 'big-pickle', name: 'Big Pickle (OpenCode)' },
+            { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5 (OpenCode)' },
+            { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex (OpenCode)' },
+            { id: 'qwen3-coder', name: 'Qwen3 Coder (OpenCode)' },
+            { id: 'glm-4.7-free', name: 'GLM-4.7 Free (OpenCode)' }
+        ]
+    },
+    kilo: {
+        id: 'kilo',
+        name: 'Kilo Code (Gateway)',
+        shortName: 'Kilo',
+        category: 'oauth',
+        authType: AUTH_TYPES.DEVICE_CODE,
+        protocol: PROTOCOLS.OPENAI_CHAT,
+        description: 'Connect via Kilo Code Gateway Device Auth (long-lived token)',
+        badgeColor: 'orange',
+        defaultBaseUrl: 'https://ai-gateway.kilo.ai/api/v1',
+        modelsEndpoint: 'https://ai-gateway.kilo.ai/api/v1/models',
+        defaultModels: [
+            { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5 (Kilo)' },
+            { id: 'claude-opus-4', name: 'Claude Opus 4 (Kilo)' },
+            { id: 'gpt-4.1', name: 'GPT-4.1 (Kilo)' },
+            { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Kilo)' }
+        ]
+    },
+    kiro: {
+        id: 'kiro',
+        name: 'Kiro (Amazon Q)',
+        shortName: 'Kiro',
+        category: 'oauth',
+        authType: AUTH_TYPES.DEVICE_CODE,
+        protocol: PROTOCOLS.KIRO,
+        description: 'Connect via Kiro / Amazon Q AWS Builder ID Device Code OAuth',
+        badgeColor: 'rose',
+        defaultBaseUrl: 'https://runtime.us-east-1.kiro.dev',
+        modelsEndpoint: null,
+        defaultModels: [
+            { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5 (Kiro)' },
+            { id: 'claude-opus-4', name: 'Claude Opus 4 (Kiro)' }
+        ]
+    },
+    minimax: {
+        id: 'minimax',
+        name: 'MiniMax',
+        shortName: 'MiniMax',
+        category: 'api-key',
+        authType: AUTH_TYPES.API_KEY,
+        protocol: PROTOCOLS.OPENAI_CHAT,
+        description: 'MiniMax M-series multimodal models API',
+        badgeColor: 'fuchsia',
+        defaultBaseUrl: 'https://api.minimax.io/v1',
+        modelsEndpoint: 'https://api.minimax.io/v1/models',
+        keyPlaceholder: 'eyJ...',
+        defaultModels: [
+            { id: 'MiniMax-M2.5', name: 'MiniMax M2.5' },
+            { id: 'MiniMax-M1', name: 'MiniMax M1' }
+        ]
+    },
+    zai: {
+        id: 'zai',
+        name: 'Z.AI (GLM)',
+        shortName: 'Z.AI',
+        category: 'api-key',
+        authType: AUTH_TYPES.API_KEY,
+        protocol: PROTOCOLS.OPENAI_CHAT,
+        description: 'Z.AI GLM models API (Zhipu AI)',
+        badgeColor: 'teal',
+        defaultBaseUrl: 'https://api.z.ai/api/paas/v4',
+        modelsEndpoint: 'https://api.z.ai/api/paas/v4/models',
+        keyPlaceholder: '...',
+        defaultModels: [
+            { id: 'glm-4.7', name: 'GLM-4.7' },
+            { id: 'glm-4.6', name: 'GLM-4.6' }
+        ]
     }
 };
 

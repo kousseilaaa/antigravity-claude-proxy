@@ -21,6 +21,9 @@ import { parseTierId } from '../cloudcode/model-api.js';
 import { getAccountProvider } from '../providers/registry.js';
 import { refreshCodexAccessToken } from '../providers/auth/openai-codex-oauth.js';
 import { exchangeCopilotSessionToken } from '../providers/auth/github-copilot-oauth.js';
+import { refreshClaudeToken } from '../providers/auth/claude-oauth.js';
+import { refreshGeminiCliToken } from '../providers/auth/gemini-cli-oauth.js';
+import { refreshDeviceCodeToken } from '../providers/auth/device-oauth.js';
 
 // Track accounts currently fetching subscription to avoid duplicate calls
 const subscriptionFetchInProgress = new Set();
@@ -156,6 +159,80 @@ export async function getTokenForAccount(account, tokenCache, onInvalid, onSave)
             throw new Error(`AUTH_INVALID: ${account.email}: ${error.message}`);
         }
     }
+
+    // OpenRouter OAuth (exchanges for API key on completion — stored as apiKey or accessToken)
+    if (providerId === 'openrouter-oauth') {
+        const token = account.apiKey || account.accessToken;
+        if (!token) {
+            throw new Error(`AUTH_INVALID: ${account.email}: Missing OpenRouter API key`);
+        }
+        tokenCache.set(account.email, { token, extractedAt: Date.now() });
+        return token;
+    }
+
+    // Kilo (long-lived token, no refresh needed)
+    if (providerId === 'kilo') {
+        const token = account.accessToken || account.apiKey;
+        if (!token) {
+            throw new Error(`AUTH_INVALID: ${account.email}: Missing Kilo access token`);
+        }
+        tokenCache.set(account.email, { token, extractedAt: Date.now() });
+        return token;
+    }
+
+    // OAuth providers that use refresh tokens: anthropic-oauth, gemini-cli, qwen-code, kimi-code, opencode-oauth, kiro
+    const REFRESHABLE_PROVIDERS = {
+        'anthropic-oauth': { refresher: (rt, meta) => refreshClaudeToken(rt), label: 'Claude OAuth' },
+        'gemini-cli':      { refresher: (rt, meta) => refreshGeminiCliToken(rt), label: 'Gemini CLI' },
+        'qwen-code':       { refresher: (rt, meta) => refreshDeviceCodeToken('qwen-code', rt, meta), label: 'Qwen Code' },
+        'kimi-code':       { refresher: (rt, meta) => refreshDeviceCodeToken('kimi-code', rt, meta), label: 'Kimi Code' },
+        'opencode-oauth':  { refresher: (rt, meta) => refreshDeviceCodeToken('opencode-oauth', rt, meta), label: 'OpenCode OAuth' },
+        kiro:              { refresher: (rt, meta) => refreshDeviceCodeToken('kiro', rt, meta), label: 'Kiro' }
+    };
+    if (REFRESHABLE_PROVIDERS[providerId]) {
+        const { refresher, label } = REFRESHABLE_PROVIDERS[providerId];
+        // Return cached/stored token if still valid
+        if (account.accessToken && account.expiresAt && Date.now() < account.expiresAt - 60000) {
+            tokenCache.set(account.email, {
+                token: account.accessToken,
+                extractedAt: Date.now(),
+                expiresAt: account.expiresAt
+            });
+            return account.accessToken;
+        }
+        if (!account.refreshToken) {
+            if (account.accessToken) return account.accessToken;
+            throw new Error(`AUTH_INVALID: ${account.email}: Missing ${label} refresh token`);
+        }
+        try {
+            const refreshed = await refresher(account.refreshToken, account.extra?.oauthMeta);
+            account.accessToken = refreshed.accessToken;
+            account.refreshToken = refreshed.refreshToken ?? account.refreshToken;
+            account.expiresAt = refreshed.expiresAt;
+            if (refreshed.baseUrl) {
+                account.baseUrl = refreshed.baseUrl;
+            }
+            if (account.isInvalid) {
+                account.isInvalid = false;
+                account.invalidReason = null;
+            }
+            if (onSave) await onSave();
+            tokenCache.set(account.email, {
+                token: refreshed.accessToken,
+                extractedAt: Date.now(),
+                expiresAt: refreshed.expiresAt
+            });
+            logger.success(`[AccountManager] Refreshed ${label} token for: ${account.email}`);
+            return refreshed.accessToken;
+        } catch (error) {
+            if (isNetworkError(error)) {
+                throw new Error(`AUTH_NETWORK_ERROR: ${error.message}`);
+            }
+            if (onInvalid) onInvalid(account.email, error.message);
+            throw new Error(`AUTH_INVALID: ${account.email}: ${error.message}`);
+        }
+    }
+
 
     // Default: Antigravity (Google OAuth / manual / local database)
     let token;

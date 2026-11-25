@@ -12,6 +12,7 @@
  *   mountWebUI(app, __dirname, accountManager);
  */
 
+import crypto from 'crypto';
 import path from 'path';
 import express from 'express';
 import { getPublicConfig, saveConfig, config } from '../config.js';
@@ -35,7 +36,18 @@ import {
     extractCodexCodeFromInput,
     startCopilotDeviceFlow,
     pollCopilotDeviceFlowOnce,
-    getGitHubUser
+    getGitHubUser,
+    getClaudeAuthorizationUrl,
+    parseClaudeCodeInput,
+    exchangeClaudeCode,
+    getGeminiCliAuthorizationUrl,
+    startGeminiCliCallbackServer,
+    exchangeGeminiCliCode,
+    getOpenRouterAuthorizationUrl,
+    startOpenRouterCallbackServer,
+    exchangeOpenRouterCode,
+    startDeviceCodeFlow,
+    pollDeviceCodeFlow
 } from '../providers/index.js';
 
 // Get package version
@@ -44,6 +56,11 @@ const packageVersion = getPackageVersion();
 // OAuth state storage (state -> { server, verifier, state, timestamp })
 // Maps state ID to active OAuth flow data
 const pendingOAuthFlows = new Map();
+// Device-code session storage (sessionId -> { providerId, deviceCode, meta, timestamp })
+const pendingDeviceSessions = new Map();
+
+// Active callback servers per providerId (providerId -> abortFn)
+const activeCallbackServers = new Map();
 
 /**
  * WebUI Helper Functions - Direct account manipulation
@@ -1537,6 +1554,340 @@ export function mountWebUI(app, dirname, accountManager) {
      * OAuth callbacks are now handled by the temporary server on port 51121
      * (same as CLI) to match Google OAuth Console's authorized redirect URIs
      */
+
+    /**
+     * GET /api/auth/provider/:providerId/url - Start OAuth flow for any provider
+     * - oauth: starts local callback server, auto-saves on callback, returns manualCodeRequired: false
+     * - oauth-manual: stores PKCE in pending map, returns manualCodeRequired: true
+     * - device-code: not supported here (use /device/start)
+     */
+    app.get('/api/auth/provider/:providerId/url', async (req, res) => {
+        const { providerId } = req.params;
+        try {
+            const provider = getProvider(providerId);
+            if (!provider || (provider.authType !== AUTH_TYPES.OAUTH && provider.authType !== AUTH_TYPES.OAUTH_MANUAL)) {
+                return res.status(400).json({ status: 'error', error: `Provider ${providerId} does not support OAuth URL flow` });
+            }
+
+            // Clean up expired pending flows (> 10 min TTL)
+            const now = Date.now();
+            for (const [key, val] of pendingOAuthFlows.entries()) {
+                if (now - val.timestamp > 10 * 60 * 1000) {
+                    pendingOAuthFlows.delete(key);
+                }
+            }
+
+            if (providerId === 'anthropic-oauth') {
+                // Manual PKCE flow: user copies code#state from browser
+                const { url, verifier, state } = getClaudeAuthorizationUrl();
+                pendingOAuthFlows.set(state, { provider: providerId, verifier, state, timestamp: Date.now() });
+                return res.json({ status: 'ok', authUrl: url, state, manualCodeRequired: true });
+            }
+
+            // oauth providers: gemini-cli, openrouter-oauth, openai-codex (generic path)
+            let urlResult;
+            let serverResult;
+            if (providerId === 'gemini-cli') {
+                urlResult = getGeminiCliAuthorizationUrl();
+                // Abort any existing server for this provider
+                if (activeCallbackServers.has(providerId)) {
+                    try { activeCallbackServers.get(providerId)(); } catch { /* ignore */ }
+                    activeCallbackServers.delete(providerId);
+                }
+                serverResult = startGeminiCliCallbackServer(urlResult.state, undefined, 180000);
+            } else if (providerId === 'openrouter-oauth') {
+                urlResult = getOpenRouterAuthorizationUrl();
+                if (activeCallbackServers.has(providerId)) {
+                    try { activeCallbackServers.get(providerId)(); } catch { /* ignore */ }
+                    activeCallbackServers.delete(providerId);
+                }
+                serverResult = startOpenRouterCallbackServer(urlResult.state, undefined, 180000);
+            } else if (providerId === 'openai-codex') {
+                urlResult = getCodexAuthorizationUrl();
+                if (activeCallbackServers.has(providerId)) {
+                    try { activeCallbackServers.get(providerId)(); } catch { /* ignore */ }
+                    activeCallbackServers.delete(providerId);
+                }
+                serverResult = startCodexCallbackServer(urlResult.state, 180000);
+            } else {
+                return res.status(400).json({ status: 'error', error: `Unsupported OAuth provider: ${providerId}` });
+            }
+
+            const { promise: serverPromise, abort: abortServer } = serverResult;
+            const { state, verifier, redirectUri } = urlResult;
+
+            activeCallbackServers.set(providerId, abortServer);
+            pendingOAuthFlows.set(state, {
+                provider: providerId,
+                serverPromise,
+                abortServer,
+                verifier,
+                redirectUri,
+                state,
+                timestamp: Date.now()
+            });
+
+            serverPromise
+                .then(async (code) => {
+                    try {
+                        logger.info(`[WebUI] Received ${providerId} OAuth callback, completing flow...`);
+                        let accountData;
+                        if (providerId === 'gemini-cli') {
+                            accountData = await exchangeGeminiCliCode(code, verifier, redirectUri);
+                            const email = normalizeAccountEmail(providerId, accountData.email);
+                            await addAccount({ provider: providerId, email, source: 'oauth', accessToken: accountData.accessToken, refreshToken: accountData.refreshToken, expiresAt: accountData.expiresAt });
+                        } else if (providerId === 'openrouter-oauth') {
+                            accountData = await exchangeOpenRouterCode(code, verifier);
+                            const email = normalizeAccountEmail(providerId, accountData.email);
+                            await addAccount({ provider: providerId, email, source: 'oauth', apiKey: accountData.apiKey, accessToken: accountData.apiKey });
+                        } else if (providerId === 'openai-codex') {
+                            accountData = await exchangeCodexCode(code, verifier);
+                            const email = normalizeAccountEmail(providerId, accountData.email);
+                            await addAccount({ provider: 'openai-codex', email, source: 'oauth', accessToken: accountData.accessToken, refreshToken: accountData.refreshToken, expiresAt: accountData.expiresAt, extra: { chatgptAccountId: accountData.chatgptAccountId } });
+                        }
+                        await accountManager.reload();
+                        logger.success(`[WebUI] ${providerId} account added successfully`);
+                    } catch (err) {
+                        logger.error(`[WebUI] ${providerId} OAuth callback completion error:`, err);
+                    } finally {
+                        pendingOAuthFlows.delete(state);
+                        activeCallbackServers.delete(providerId);
+                    }
+                })
+                .catch((err) => {
+                    if (!err.message?.includes('aborted')) {
+                        logger.error(`[WebUI] ${providerId} callback server error:`, err);
+                    }
+                    pendingOAuthFlows.delete(state);
+                    activeCallbackServers.delete(providerId);
+                });
+
+            res.json({ status: 'ok', authUrl: urlResult.url, state, manualCodeRequired: false });
+        } catch (error) {
+            logger.error(`[WebUI] Error starting OAuth for ${providerId}:`, error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/auth/provider/:providerId/complete - Complete OAuth flow (manual code paste or callback URL)
+     * Works for: anthropic-oauth (parseClaudeCodeInput -> exchangeClaudeCode)
+     *            openai-codex, gemini-cli, openrouter-oauth (extract code, exchange, save)
+     */
+    app.post('/api/auth/provider/:providerId/complete', async (req, res) => {
+        const { providerId } = req.params;
+        try {
+            const provider = getProvider(providerId);
+            if (!provider || (provider.authType !== AUTH_TYPES.OAUTH && provider.authType !== AUTH_TYPES.OAUTH_MANUAL)) {
+                return res.status(400).json({ status: 'error', error: `Provider ${providerId} does not support OAuth complete` });
+            }
+
+            const { callbackInput, state } = req.body;
+            if (!callbackInput || !state) {
+                return res.status(400).json({ status: 'error', error: 'Missing callbackInput or state' });
+            }
+
+            const flowData = pendingOAuthFlows.get(state);
+            if (!flowData || flowData.provider !== providerId) {
+                return res.status(400).json({
+                    status: 'error',
+                    error: 'OAuth flow not found or already completed. Please refresh the account list.'
+                });
+            }
+
+            let email, accountPayload;
+
+            if (providerId === 'anthropic-oauth') {
+                const { code } = parseClaudeCodeInput(callbackInput);
+                const data = await exchangeClaudeCode(code, flowData.verifier, state);
+                email = normalizeAccountEmail(providerId, data.email);
+                accountPayload = {
+                    provider: 'anthropic-oauth',
+                    email,
+                    source: 'oauth',
+                    accessToken: data.accessToken,
+                    refreshToken: data.refreshToken,
+                    expiresAt: data.expiresAt,
+                    extra: { accountUuid: data.accountUuid, orgUuid: data.orgUuid }
+                };
+            } else if (providerId === 'gemini-cli') {
+                // Extract code from pasted URL or raw code
+                let code = callbackInput.trim();
+                try {
+                    const u = new URL(callbackInput);
+                    code = u.searchParams.get('code') || code;
+                } catch { /* raw code */ }
+                const data = await exchangeGeminiCliCode(code, flowData.verifier, flowData.redirectUri);
+                email = normalizeAccountEmail(providerId, data.email);
+                accountPayload = { provider: 'gemini-cli', email, source: 'oauth', accessToken: data.accessToken, refreshToken: data.refreshToken, expiresAt: data.expiresAt };
+            } else if (providerId === 'openrouter-oauth') {
+                let code = callbackInput.trim();
+                try {
+                    const u = new URL(callbackInput);
+                    code = u.searchParams.get('code') || code;
+                } catch { /* raw code */ }
+                const data = await exchangeOpenRouterCode(code, flowData.verifier);
+                email = normalizeAccountEmail(providerId, data.email);
+                accountPayload = { provider: 'openrouter-oauth', email, source: 'oauth', apiKey: data.apiKey, accessToken: data.apiKey };
+            } else if (providerId === 'openai-codex') {
+                const { code } = extractCodexCodeFromInput(callbackInput);
+                const data = await exchangeCodexCode(code, flowData.verifier);
+                email = normalizeAccountEmail(providerId, data.email);
+                accountPayload = { provider: 'openai-codex', email, source: 'oauth', accessToken: data.accessToken, refreshToken: data.refreshToken, expiresAt: data.expiresAt, extra: { chatgptAccountId: data.chatgptAccountId } };
+            } else {
+                return res.status(400).json({ status: 'error', error: `Unsupported OAuth provider for manual complete: ${providerId}` });
+            }
+
+            await addAccount(accountPayload);
+            await accountManager.reload();
+
+            if (flowData.abortServer) flowData.abortServer();
+            pendingOAuthFlows.delete(state);
+            activeCallbackServers.delete(providerId);
+
+            logger.success(`[WebUI] ${providerId} account ${email} added via manual complete`);
+            res.json({ status: 'ok', email, message: `Account ${email} added successfully` });
+        } catch (error) {
+            logger.error(`[WebUI] Manual OAuth complete error for ${providerId}:`, error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/auth/provider/:providerId/device/start - Start device code flow
+     * Returns { status: 'ok', sessionId, userCode, verificationUri, expiresIn, interval }
+     */
+    app.post('/api/auth/provider/:providerId/device/start', async (req, res) => {
+        const { providerId } = req.params;
+        try {
+            const provider = getProvider(providerId);
+            if (!provider) {
+                return res.status(400).json({ status: 'error', error: `Unknown provider: ${providerId}` });
+            }
+
+            // github-copilot uses its own existing legacy flow; direct to it
+            if (providerId === 'github-copilot') {
+                const flow = await startCopilotDeviceFlow();
+                const sessionId = flow.deviceCode;
+                pendingDeviceSessions.set(sessionId, { providerId, deviceCode: flow.deviceCode, meta: {}, timestamp: Date.now() });
+                return res.json({ status: 'ok', sessionId, userCode: flow.userCode, verificationUri: flow.verificationUri, expiresIn: flow.expiresIn, interval: flow.interval });
+            }
+
+            if (provider.authType !== AUTH_TYPES.DEVICE_CODE) {
+                return res.status(400).json({ status: 'error', error: `Provider ${providerId} does not support device code flow` });
+            }
+
+            // Clean up expired device sessions (> 10 min TTL)
+            const now = Date.now();
+            for (const [key, val] of pendingDeviceSessions.entries()) {
+                if (now - val.timestamp > 10 * 60 * 1000) {
+                    pendingDeviceSessions.delete(key);
+                }
+            }
+
+            const flow = await startDeviceCodeFlow(providerId);
+            const sessionId = crypto.randomUUID ? crypto.randomUUID() : `${providerId}-${Date.now()}`;
+            pendingDeviceSessions.set(sessionId, {
+                providerId,
+                deviceCode: flow.deviceCode,
+                meta: flow.meta || {},
+                timestamp: Date.now()
+            });
+
+            res.json({
+                status: 'ok',
+                sessionId,
+                userCode: flow.userCode,
+                verificationUri: flow.verificationUri,
+                expiresIn: flow.expiresIn,
+                interval: flow.interval
+            });
+        } catch (error) {
+            logger.error(`[WebUI] Error starting device flow for ${providerId}:`, error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/auth/provider/:providerId/device/poll - Poll device code flow once
+     * Body: { sessionId }
+     * Returns { status: 'pending' | 'slow_down' | 'ok', interval?, email?, message? }
+     */
+    app.post('/api/auth/provider/:providerId/device/poll', async (req, res) => {
+        const { providerId } = req.params;
+        try {
+            const { sessionId } = req.body;
+            if (!sessionId) {
+                return res.status(400).json({ status: 'error', error: 'sessionId is required' });
+            }
+
+            const session = pendingDeviceSessions.get(sessionId);
+            if (!session || session.providerId !== providerId) {
+                return res.status(400).json({ status: 'error', error: 'Device session not found or expired' });
+            }
+
+            // github-copilot uses legacy poll function
+            if (providerId === 'github-copilot') {
+                const poll = await pollCopilotDeviceFlowOnce(session.deviceCode);
+                if (poll.status === 'complete' && poll.accessToken) {
+                    const user = await getGitHubUser(poll.accessToken);
+                    const email = normalizeAccountEmail(providerId, user.email);
+                    await addAccount({
+                        email,
+                        provider: 'github-copilot',
+                        label: `Copilot (${user.login})`,
+                        source: 'oauth',
+                        refreshToken: poll.accessToken
+                    });
+                    await accountManager.reload();
+                    pendingDeviceSessions.delete(sessionId);
+                    logger.success(`[WebUI] GitHub Copilot account ${email} added`);
+                    return res.json({ status: 'ok', email, message: `GitHub Copilot account ${email} connected` });
+                }
+                return res.json(poll.status === 'slow_down'
+                    ? { status: 'slow_down', interval: poll.interval }
+                    : { status: 'pending' });
+            }
+
+            const result = await pollDeviceCodeFlow(providerId, session.deviceCode, session.meta);
+
+            if (result.status === 'complete' && result.accountData) {
+                const ad = result.accountData;
+                const rawEmail = ad.email || `${providerId}-${Date.now()}`;
+                const email = normalizeAccountEmail(providerId, rawEmail);
+
+                // Build account payload - only include defined fields
+                const accountPayload = {
+                    provider: providerId,
+                    email,
+                    source: 'oauth',
+                    accessToken: ad.accessToken
+                };
+                if (ad.refreshToken != null) accountPayload.refreshToken = ad.refreshToken;
+                if (ad.expiresAt != null) accountPayload.expiresAt = ad.expiresAt;
+                if (ad.baseUrl != null) accountPayload.baseUrl = ad.baseUrl;
+                const extraFields = {};
+                if (ad.orgId != null) extraFields.orgId = ad.orgId;
+                if (ad.oauthMeta != null) extraFields.oauthMeta = ad.oauthMeta;
+                if (Object.keys(extraFields).length > 0) accountPayload.extra = extraFields;
+
+                await addAccount(accountPayload);
+                await accountManager.reload();
+                pendingDeviceSessions.delete(sessionId);
+                logger.success(`[WebUI] ${providerId} account ${email} added via device flow`);
+                return res.json({ status: 'ok', email, message: `Account ${email} added successfully` });
+            }
+
+            if (result.status === 'slow_down') {
+                return res.json({ status: 'slow_down', interval: result.interval });
+            }
+
+            res.json({ status: 'pending' });
+        } catch (error) {
+            logger.error(`[WebUI] Device poll error for ${providerId}:`, error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
 
     logger.info('[WebUI] Mounted at /');
 }

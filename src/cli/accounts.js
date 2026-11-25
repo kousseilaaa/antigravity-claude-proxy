@@ -41,7 +41,18 @@ import {
     extractCodexCodeFromInput,
     startCopilotDeviceFlow,
     pollCopilotDeviceFlowOnce,
-    getGitHubUser
+    getGitHubUser,
+    getClaudeAuthorizationUrl,
+    parseClaudeCodeInput,
+    exchangeClaudeCode,
+    getGeminiCliAuthorizationUrl,
+    startGeminiCliCallbackServer,
+    exchangeGeminiCliCode,
+    getOpenRouterAuthorizationUrl,
+    startOpenRouterCallbackServer,
+    exchangeOpenRouterCode,
+    startDeviceCodeFlow,
+    pollDeviceCodeFlow
 } from '../providers/index.js';
 
 const SERVER_PORT = process.env.PORT || DEFAULT_PORT;
@@ -420,6 +431,227 @@ async function addGitHubCopilotAccount(existingAccounts) {
 }
 
 /**
+ * Add a Claude Pro/Max account via OAuth PKCE (manual code paste)
+ */
+async function addAnthropicOAuthAccount(existingAccounts, rl) {
+    console.log('\n=== Add Claude Pro/Max (OAuth) Account ===\n');
+    const { url, verifier, state } = getClaudeAuthorizationUrl();
+
+    console.log('Open this URL to authorize with Anthropic:\n');
+    console.log(`   ${url}\n`);
+    console.log('After signing in, you will see a code like: <code>#<state>');
+    console.log('Copy the entire string shown on the page.\n');
+    openBrowser(url);
+
+    const input = (await rl.question('Paste the code#state string (or full callback URL): ')).trim();
+    try {
+        const { code, state: parsedState } = parseClaudeCodeInput(input);
+        if (parsedState && parsedState !== state) {
+            console.log('\n⚠ State mismatch detected. Proceeding anyway...');
+        }
+        console.log('\nExchanging authorization code for tokens...');
+        const data = await exchangeClaudeCode(code, verifier, parsedState || state);
+        const accountEmail = normalizeAccountEmail('anthropic-oauth', data.email);
+        const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === 'anthropic-oauth' && normalizeAccountEmail('anthropic-oauth', a.email) === accountEmail);
+        if (existing) {
+            console.log(`\n⚠ Claude OAuth account ${data.email} already exists. Updating tokens.`);
+            existing.email = accountEmail;
+            existing.provider = 'anthropic-oauth';
+            existing.accessToken = data.accessToken;
+            existing.refreshToken = data.refreshToken;
+            existing.expiresAt = data.expiresAt;
+            return null;
+        }
+        console.log(`\n✓ Connected Claude OAuth account: ${data.email}`);
+        return {
+            email: accountEmail,
+            provider: 'anthropic-oauth',
+            label: 'Claude Pro/Max',
+            source: 'oauth',
+            accessToken: data.accessToken,
+            refreshToken: data.refreshToken,
+            expiresAt: data.expiresAt,
+            accountUuid: data.accountUuid || undefined,
+            orgUuid: data.orgUuid || undefined,
+            addedAt: new Date().toISOString(),
+            modelRateLimits: {}
+        };
+    } catch (error) {
+        console.error(`\n✗ Claude OAuth authentication failed: ${error.message}`);
+        return null;
+    }
+}
+
+/**
+ * Add a Gemini CLI account via OAuth PKCE with localhost callback
+ */
+async function addGeminiCliAccount(existingAccounts, rl, noBrowser = false) {
+    console.log('\n=== Add Gemini CLI (Google) Account ===\n');
+    const { url, verifier, state, redirectUri } = getGeminiCliAuthorizationUrl();
+
+    let code;
+    try {
+        if (noBrowser) {
+            console.log('Open this URL in a browser:\n');
+            console.log(`   ${url}\n`);
+            const input = await rl.question('Paste the callback URL or authorization code: ');
+            const parsed = new URL(input.trim().startsWith('http') ? input.trim() : `http://localhost?code=${input.trim()}`);
+            code = parsed.searchParams.get('code') || input.trim();
+        } else {
+            console.log('Opening browser for Google sign-in...');
+            console.log(`   ${url}\n`);
+            openBrowser(url);
+            console.log('Waiting for callback (timeout: 3 minutes)...\n');
+            const { promise } = startGeminiCliCallbackServer(state);
+            code = await promise;
+        }
+
+        console.log('Exchanging authorization code for tokens...');
+        const data = await exchangeGeminiCliCode(code, verifier, redirectUri);
+        const accountEmail = normalizeAccountEmail('gemini-cli', data.email);
+        const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === 'gemini-cli' && normalizeAccountEmail('gemini-cli', a.email) === accountEmail);
+        if (existing) {
+            console.log(`\n⚠ Gemini CLI account ${data.email} already exists. Updating tokens.`);
+            existing.email = accountEmail;
+            existing.provider = 'gemini-cli';
+            existing.accessToken = data.accessToken;
+            existing.refreshToken = data.refreshToken;
+            existing.expiresAt = data.expiresAt;
+            return null;
+        }
+        console.log(`\n✓ Connected Gemini CLI account: ${data.email}`);
+        return {
+            email: accountEmail,
+            provider: 'gemini-cli',
+            label: 'Gemini CLI',
+            source: 'oauth',
+            accessToken: data.accessToken,
+            refreshToken: data.refreshToken,
+            expiresAt: data.expiresAt,
+            addedAt: new Date().toISOString(),
+            modelRateLimits: {}
+        };
+    } catch (error) {
+        console.error(`\n✗ Gemini CLI authentication failed: ${error.message}`);
+        return null;
+    }
+}
+
+/**
+ * Add an OpenRouter account via OAuth PKCE with localhost callback
+ */
+async function addOpenRouterOAuthAccount(existingAccounts, rl, noBrowser = false) {
+    console.log('\n=== Add OpenRouter (OAuth) Account ===\n');
+    const { url, verifier, state } = getOpenRouterAuthorizationUrl();
+
+    let code;
+    try {
+        if (noBrowser) {
+            console.log('Open this URL in a browser:\n');
+            console.log(`   ${url}\n`);
+            const input = await rl.question('Paste the callback URL or authorization code: ');
+            const parsed = new URL(input.trim().startsWith('http') ? input.trim() : `http://localhost?code=${input.trim()}`);
+            code = parsed.searchParams.get('code') || input.trim();
+        } else {
+            console.log('Opening browser for OpenRouter sign-in...');
+            console.log(`   ${url}\n`);
+            openBrowser(url);
+            console.log('Waiting for callback (timeout: 3 minutes)...\n');
+            const { promise } = startOpenRouterCallbackServer(state);
+            code = await promise;
+        }
+
+        console.log('Exchanging authorization code for API key...');
+        const data = await exchangeOpenRouterCode(code, verifier);
+        const accountEmail = normalizeAccountEmail('openrouter-oauth', data.email);
+        const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === 'openrouter-oauth' && normalizeAccountEmail('openrouter-oauth', a.email) === accountEmail);
+        if (existing) {
+            console.log(`\n⚠ OpenRouter OAuth account ${data.email} already exists. Updating key.`);
+            existing.email = accountEmail;
+            existing.provider = 'openrouter-oauth';
+            existing.apiKey = data.apiKey;
+            return null;
+        }
+        console.log(`\n✓ Connected OpenRouter OAuth account: ${data.email}`);
+        return {
+            email: accountEmail,
+            provider: 'openrouter-oauth',
+            label: data.email || 'OpenRouter',
+            source: 'oauth',
+            apiKey: data.apiKey,
+            addedAt: new Date().toISOString(),
+            modelRateLimits: {}
+        };
+    } catch (error) {
+        console.error(`\n✗ OpenRouter OAuth authentication failed: ${error.message}`);
+        return null;
+    }
+}
+
+/**
+ * Add an account via generic Device Code OAuth flow
+ * Supports: qwen-code, kimi-code, opencode-oauth, kilo, kiro
+ */
+async function addDeviceCodeAccount(providerId, existingAccounts, noBrowser = false) {
+    const provider = getProvider(providerId);
+    console.log(`\n=== Add ${provider.name} Account ===\n`);
+    try {
+        const flow = await startDeviceCodeFlow(providerId);
+        console.log(`1. Open: ${flow.verificationUri}`);
+        console.log(`2. Enter code: ${flow.userCode}\n`);
+        if (!noBrowser) {
+            openBrowser(flow.verificationUri);
+        }
+        console.log(`Waiting for ${provider.name} authorization...`);
+
+        let intervalMs = Math.max(5000, (flow.interval || 5) * 1000);
+        const deadline = Date.now() + (flow.expiresIn || 900) * 1000;
+        while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, intervalMs));
+            const poll = await pollDeviceCodeFlow(providerId, flow.deviceCode, flow.meta || {});
+            if (poll.status === 'complete' && poll.accountData) {
+                const ad = poll.accountData;
+                const accountEmail = normalizeAccountEmail(providerId, ad.email);
+                const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === providerId && normalizeAccountEmail(providerId, a.email) === accountEmail);
+                if (existing) {
+                    console.log(`\n⚠ ${provider.name} account ${ad.email} already exists. Updating tokens.`);
+                    existing.email = accountEmail;
+                    existing.provider = providerId;
+                    existing.accessToken = ad.accessToken;
+                    existing.refreshToken = ad.refreshToken || existing.refreshToken;
+                    existing.expiresAt = ad.expiresAt;
+                    if (ad.baseUrl) existing.baseUrl = ad.baseUrl;
+                    if (ad.orgId) existing.extra = { ...(existing.extra || {}), orgId: ad.orgId };
+                    if (ad.oauthMeta) existing.oauthMeta = ad.oauthMeta;
+                    return null;
+                }
+                console.log(`\n✓ Connected ${provider.name} account: ${ad.email}`);
+                return {
+                    email: accountEmail,
+                    provider: providerId,
+                    label: provider.name,
+                    source: 'oauth',
+                    accessToken: ad.accessToken,
+                    refreshToken: ad.refreshToken || null,
+                    expiresAt: ad.expiresAt,
+                    baseUrl: ad.baseUrl || provider.defaultBaseUrl || undefined,
+                    extra: ad.orgId ? { orgId: ad.orgId } : undefined,
+                    oauthMeta: ad.oauthMeta || undefined,
+                    addedAt: new Date().toISOString(),
+                    modelRateLimits: {}
+                };
+            } else if (poll.status === 'slow_down') {
+                intervalMs = Math.max(intervalMs + 5000, (poll.interval || 10) * 1000);
+            }
+        }
+        throw new Error(`${provider.name} Device Flow timed out`);
+    } catch (error) {
+        console.error(`\n✗ ${provider.name} authentication failed: ${error.message}`);
+        return null;
+    }
+}
+
+/**
  * Add an API Key provider account interactively
  */
 async function addApiKeyAccount(providerId, existingAccounts, rl) {
@@ -563,7 +795,10 @@ async function interactiveAdd(rl, noBrowser = false) {
     const providers = listProviders();
     console.log('\nSelect provider:');
     providers.forEach((p, idx) => {
-        const tag = p.authType === AUTH_TYPES.API_KEY ? 'API Key' : (p.authType === AUTH_TYPES.DEVICE_CODE ? 'Device Code' : 'OAuth');
+        const tag = p.authType === AUTH_TYPES.API_KEY ? 'API Key'
+            : p.authType === AUTH_TYPES.DEVICE_CODE ? 'Device Code'
+            : p.authType === AUTH_TYPES.OAUTH_MANUAL ? 'OAuth (manual)'
+            : 'OAuth';
         console.log(`  ${idx + 1}. ${p.name} [${tag}]`);
     });
     const providerChoice = (await rl.question(`\nProvider number [1]: `)).trim();
@@ -579,6 +814,14 @@ async function interactiveAdd(rl, noBrowser = false) {
         newAccount = await addOpenAICodexAccount(accounts, rl, noBrowser);
     } else if (selectedProvider.id === 'github-copilot') {
         newAccount = await addGitHubCopilotAccount(accounts);
+    } else if (selectedProvider.id === 'anthropic-oauth') {
+        newAccount = await addAnthropicOAuthAccount(accounts, rl);
+    } else if (selectedProvider.id === 'gemini-cli') {
+        newAccount = await addGeminiCliAccount(accounts, rl, noBrowser);
+    } else if (selectedProvider.id === 'openrouter-oauth') {
+        newAccount = await addOpenRouterOAuthAccount(accounts, rl, noBrowser);
+    } else if (selectedProvider.authType === AUTH_TYPES.DEVICE_CODE) {
+        newAccount = await addDeviceCodeAccount(selectedProvider.id, accounts, noBrowser);
     } else {
         newAccount = await addApiKeyAccount(selectedProvider.id, accounts, rl);
     }

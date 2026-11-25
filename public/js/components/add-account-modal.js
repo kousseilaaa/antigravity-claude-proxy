@@ -17,20 +17,25 @@ window.Components.addAccountModal = () => ({
     callbackInput: '',
     submitting: false,
 
-    // OpenAI Codex OAuth state
-    codexAuthUrl: '',
-    codexAuthState: '',
-    codexCallbackInput: '',
-    codexPolling: false,
-    codexPollTimer: null,
+    // Generic OAuth PKCE (non-antigravity) state
+    oauthAuthUrl: '',
+    oauthAuthState: '',
+    oauthCallbackInput: '',
+    oauthPolling: false,
+    oauthPollTimer: null,
 
-    // GitHub Copilot Device Code state
-    copilotDeviceCode: '',
-    copilotUserCode: '',
-    copilotVerificationUri: '',
-    copilotPolling: false,
-    copilotPollTimer: null,
-    copilotStatusMsg: '',
+    // Generic OAuth-manual (code#state paste) state
+    oauthManualAuthUrl: '',
+    oauthManualState: '',
+    oauthManualCallbackInput: '',
+
+    // Generic Device Code state
+    deviceSessionId: '',
+    deviceUserCode: '',
+    deviceVerificationUri: '',
+    devicePolling: false,
+    devicePollTimer: null,
+    deviceStatusMsg: '',
 
     // API Key form state
     apiKeyForm: {
@@ -94,16 +99,16 @@ window.Components.addAccountModal = () => ({
     },
 
     stopPolling() {
-        if (this.codexPollTimer) {
-            clearInterval(this.codexPollTimer);
-            this.codexPollTimer = null;
+        if (this.oauthPollTimer) {
+            clearInterval(this.oauthPollTimer);
+            this.oauthPollTimer = null;
         }
-        this.codexPolling = false;
-        if (this.copilotPollTimer) {
-            clearInterval(this.copilotPollTimer);
-            this.copilotPollTimer = null;
+        this.oauthPolling = false;
+        if (this.devicePollTimer) {
+            clearInterval(this.devicePollTimer);
+            this.devicePollTimer = null;
         }
-        this.copilotPolling = false;
+        this.devicePolling = false;
     },
 
     resetState() {
@@ -113,13 +118,16 @@ window.Components.addAccountModal = () => ({
         this.authState = '';
         this.callbackInput = '';
         this.submitting = false;
-        this.codexAuthUrl = '';
-        this.codexAuthState = '';
-        this.codexCallbackInput = '';
-        this.copilotDeviceCode = '';
-        this.copilotUserCode = '';
-        this.copilotVerificationUri = '';
-        this.copilotStatusMsg = '';
+        this.oauthAuthUrl = '';
+        this.oauthAuthState = '';
+        this.oauthCallbackInput = '';
+        this.oauthManualAuthUrl = '';
+        this.oauthManualState = '';
+        this.oauthManualCallbackInput = '';
+        this.deviceSessionId = '';
+        this.deviceUserCode = '';
+        this.deviceVerificationUri = '';
+        this.deviceStatusMsg = '';
         this.apiKeyForm = {
             apiKey: '',
             label: '',
@@ -190,42 +198,50 @@ window.Components.addAccountModal = () => ({
         }
     },
 
-    // --- OpenAI Codex (ChatGPT) OAuth ---
-    async startCodexOAuth() {
+    // --- Generic OAuth PKCE (openai-codex, gemini-cli, openrouter-oauth) ---
+    // Starts local callback server, opens popup, polls account list until new account appears.
+    async startGenericOAuth() {
+        const provider = this.selectedProvider;
+        if (!provider) return;
         this.submitting = true;
         try {
             const store = Alpine.store('global');
             const initialCount = (Alpine.store('data').accounts || []).length;
-            const { response, newPassword } = await window.utils.request('/api/auth/openai-codex/url', {}, store.webuiPassword);
+            const { response, newPassword } = await window.utils.request(
+                `/api/auth/provider/${provider.id}/url`, {}, store.webuiPassword
+            );
             if (newPassword) store.webuiPassword = newPassword;
             const data = await response.json();
             if (data.status !== 'ok') {
-                throw new Error(data.error || 'Failed to start OpenAI Codex OAuth');
+                throw new Error(data.error || `Failed to start ${provider.name} OAuth`);
             }
 
-            this.codexAuthUrl = data.url;
-            this.codexAuthState = data.state;
-            window.open(data.url, 'openai_codex_oauth', 'width=600,height=720,scrollbars=yes');
-            store.showToast('Complete OpenAI login in the opened window...', 'info');
+            this.oauthAuthUrl = data.authUrl;
+            this.oauthAuthState = data.state;
 
-            // Poll account list until new account appears (max 2 minutes)
-            this.codexPolling = true;
-            let ticks = 0;
-            this.codexPollTimer = setInterval(async () => {
-                ticks++;
-                if (ticks > 40) {
-                    this.stopPolling();
-                    return;
-                }
-                await Alpine.store('data').fetchData();
-                const currentAccounts = Alpine.store('data').accounts || [];
-                if (currentAccounts.length > initialCount) {
-                    this.stopPolling();
-                    store.showToast('OpenAI Codex account connected!', 'success');
-                    document.getElementById('add_account_modal').close();
-                    this.resetState();
-                }
-            }, 3000);
+            if (!data.manualCodeRequired) {
+                // Auto-callback mode: open popup, poll account list
+                window.open(data.authUrl, `${provider.id}_oauth`, 'width=600,height=720,scrollbars=yes');
+                store.showToast(`Complete ${provider.name} login in the opened window...`, 'info');
+
+                this.oauthPolling = true;
+                let ticks = 0;
+                this.oauthPollTimer = setInterval(async () => {
+                    ticks++;
+                    if (ticks > 40) {
+                        this.stopPolling();
+                        return;
+                    }
+                    await Alpine.store('data').fetchData();
+                    const currentAccounts = Alpine.store('data').accounts || [];
+                    if (currentAccounts.length > initialCount) {
+                        this.stopPolling();
+                        store.showToast(`${provider.name} account connected!`, 'success');
+                        document.getElementById('add_account_modal').close();
+                        this.resetState();
+                    }
+                }, 3000);
+            }
         } catch (e) {
             Alpine.store('global').showToast(e.message, 'error');
         } finally {
@@ -233,23 +249,26 @@ window.Components.addAccountModal = () => ({
         }
     },
 
-    async completeCodexManualAuth() {
-        if (!this.codexCallbackInput || !this.codexAuthState) return;
+    async completeGenericOAuth() {
+        const provider = this.selectedProvider;
+        if (!this.oauthCallbackInput || !this.oauthAuthState || !provider) return;
         this.submitting = true;
         try {
             const store = Alpine.store('global');
-            const { response, newPassword } = await window.utils.request('/api/auth/openai-codex/complete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    callbackInput: this.codexCallbackInput,
-                    state: this.codexAuthState
-                })
-            }, store.webuiPassword);
+            const { response, newPassword } = await window.utils.request(
+                `/api/auth/provider/${provider.id}/complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        callbackInput: this.oauthCallbackInput,
+                        state: this.oauthAuthState
+                    })
+                }, store.webuiPassword
+            );
             if (newPassword) store.webuiPassword = newPassword;
             const data = await response.json();
             if (data.status === 'ok') {
-                store.showToast(data.message || 'OpenAI Codex account connected!', 'success');
+                store.showToast(data.message || `${provider.name} account connected!`, 'success');
                 Alpine.store('data').fetchData();
                 document.getElementById('add_account_modal').close();
                 this.resetState();
@@ -263,48 +282,119 @@ window.Components.addAccountModal = () => ({
         }
     },
 
-    // --- GitHub Copilot Device Flow ---
-    async startCopilotAuth() {
+    // --- Generic OAuth-Manual (anthropic-oauth: code#state paste) ---
+    async startOAuthManual() {
+        const provider = this.selectedProvider;
+        if (!provider) return;
         this.submitting = true;
-        this.copilotStatusMsg = '';
         try {
             const store = Alpine.store('global');
-            const { response, newPassword } = await window.utils.request('/api/auth/github-copilot/start', {
-                method: 'POST'
-            }, store.webuiPassword);
+            const { response, newPassword } = await window.utils.request(
+                `/api/auth/provider/${provider.id}/url`, {}, store.webuiPassword
+            );
             if (newPassword) store.webuiPassword = newPassword;
             const data = await response.json();
             if (data.status !== 'ok') {
-                throw new Error(data.error || 'Failed to start GitHub Copilot login');
+                throw new Error(data.error || `Failed to start ${provider.name} OAuth`);
+            }
+            this.oauthManualAuthUrl = data.authUrl;
+            this.oauthManualState = data.state;
+            // Open auth URL in new tab; user copies back code#state
+            window.open(data.authUrl, '_blank', 'noopener,noreferrer');
+        } catch (e) {
+            Alpine.store('global').showToast(e.message, 'error');
+        } finally {
+            this.submitting = false;
+        }
+    },
+
+    async completeOAuthManual() {
+        const provider = this.selectedProvider;
+        if (!this.oauthManualCallbackInput || !this.oauthManualState || !provider) return;
+        this.submitting = true;
+        try {
+            const store = Alpine.store('global');
+            const { response, newPassword } = await window.utils.request(
+                `/api/auth/provider/${provider.id}/complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        callbackInput: this.oauthManualCallbackInput,
+                        state: this.oauthManualState
+                    })
+                }, store.webuiPassword
+            );
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json();
+            if (data.status === 'ok') {
+                store.showToast(data.message || `${provider.name} account connected!`, 'success');
+                Alpine.store('data').fetchData();
+                document.getElementById('add_account_modal').close();
+                this.resetState();
+            } else {
+                store.showToast(data.error || 'Authentication failed', 'error');
+            }
+        } catch (e) {
+            Alpine.store('global').showToast(e.message, 'error');
+        } finally {
+            this.submitting = false;
+        }
+    },
+
+    // --- Generic Device Code (github-copilot, qwen-code, kimi-code, opencode-oauth, kilo, kiro) ---
+    async startDeviceAuth() {
+        const provider = this.selectedProvider;
+        if (!provider) return;
+        this.submitting = true;
+        this.deviceStatusMsg = '';
+        try {
+            const store = Alpine.store('global');
+            const { response, newPassword } = await window.utils.request(
+                `/api/auth/provider/${provider.id}/device/start`, {
+                    method: 'POST'
+                }, store.webuiPassword
+            );
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json();
+            if (data.status !== 'ok') {
+                throw new Error(data.error || `Failed to start ${provider.name} device flow`);
             }
 
-            this.copilotDeviceCode = data.deviceCode;
-            this.copilotUserCode = data.userCode;
-            this.copilotVerificationUri = data.verificationUri;
-            this.copilotStatusMsg = 'Waiting for GitHub authorization...';
-            this.copilotPolling = true;
+            this.deviceSessionId = data.sessionId;
+            this.deviceUserCode = data.userCode;
+            this.deviceVerificationUri = data.verificationUri;
+            this.deviceStatusMsg = `Waiting for ${provider.name} authorization...`;
+            this.devicePolling = true;
 
             const intervalMs = Math.max(5000, (data.interval || 5) * 1000);
-            this.copilotPollTimer = setInterval(async () => {
+            this.devicePollTimer = setInterval(async () => {
                 try {
-                    const { response: pollRes } = await window.utils.request('/api/auth/github-copilot/poll', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ deviceCode: this.copilotDeviceCode })
-                    }, store.webuiPassword);
+                    const { response: pollRes } = await window.utils.request(
+                        `/api/auth/provider/${provider.id}/device/poll`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ sessionId: this.deviceSessionId })
+                        }, store.webuiPassword
+                    );
                     const pollData = await pollRes.json();
-                    if (pollData.status === 'complete') {
+                    if (pollData.status === 'ok') {
                         this.stopPolling();
-                        store.showToast(pollData.message || 'GitHub Copilot connected!', 'success');
+                        store.showToast(pollData.message || `${provider.name} connected!`, 'success');
                         Alpine.store('data').fetchData();
                         document.getElementById('add_account_modal').close();
                         this.resetState();
-                    } else if (pollData.status === 'expired') {
+                    } else if (pollData.status === 'slow_down') {
+                        // Backend already handles interval; just show info
+                        this.deviceStatusMsg = `Waiting for ${provider.name} authorization...`;
+                    } else if (pollData.status === 'pending') {
+                        this.deviceStatusMsg = `Waiting for ${provider.name} authorization...`;
+                    } else {
+                        // expired or error
                         this.stopPolling();
-                        this.copilotStatusMsg = 'Device code expired. Please try again.';
+                        this.deviceStatusMsg = pollData.error || 'Authorization expired. Please try again.';
                     }
                 } catch (err) {
-                    console.warn('[CopilotPoll] error:', err);
+                    console.warn('[DevicePoll] error:', err);
                 }
             }, intervalMs);
         } catch (e) {
