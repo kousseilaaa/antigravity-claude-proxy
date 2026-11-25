@@ -303,5 +303,49 @@ await runTest('Anthropic passthrough adapter forwards native JSON & SSE', async 
     }
 });
 
+// 8. Same email across multiple providers (no override / no tokenCache collision)
+await runTest('Same email coexists across multiple providers without collision', async () => {
+    const { normalizeAccountEmail, stripProviderPrefix } = await import('../src/providers/registry.js');
+    const { loadAccounts, saveAccounts } = await import('../src/account-manager/storage.js');
+    const { getTokenForAccount } = await import('../src/account-manager/credentials.js');
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+
+    assert.strictEqual(normalizeAccountEmail('antigravity', 'alice@gmail.com'), 'alice@gmail.com');
+    assert.strictEqual(normalizeAccountEmail('openai-codex', 'alice@gmail.com'), 'openai-codex:alice@gmail.com');
+    assert.strictEqual(normalizeAccountEmail('openai-codex', 'openai-codex:alice@gmail.com'), 'openai-codex:alice@gmail.com');
+    assert.strictEqual(stripProviderPrefix('openai-codex:alice@gmail.com', 'openai-codex'), 'alice@gmail.com');
+    assert.strictEqual(stripProviderPrefix('alice@gmail.com', 'antigravity'), 'alice@gmail.com');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agp-multi-email-'));
+    const cfgPath = path.join(tmpDir, 'accounts.json');
+    try {
+        await saveAccounts(cfgPath, [
+            { email: 'alice@gmail.com', provider: 'antigravity', source: 'manual', apiKey: 'ag-token' },
+            { email: 'alice@gmail.com', provider: 'openai-codex', source: 'oauth', accessToken: 'codex-token', expiresAt: Date.now() + 3600_000 },
+            { email: 'alice@gmail.com', provider: 'openrouter', source: 'api-key', apiKey: 'or-token' }
+        ], {}, 0);
+
+        const loaded = await loadAccounts(cfgPath);
+        assert.strictEqual(loaded.accounts.length, 3);
+        assert.deepStrictEqual(
+            loaded.accounts.map(a => a.email),
+            ['alice@gmail.com', 'openai-codex:alice@gmail.com', 'openrouter:alice@gmail.com']
+        );
+
+        // Verify tokenCache isolation between same-email accounts
+        const tokenCache = new Map();
+        const agTok = await getTokenForAccount(loaded.accounts[0], tokenCache);
+        const codexTok = await getTokenForAccount(loaded.accounts[1], tokenCache);
+        const orTok = await getTokenForAccount(loaded.accounts[2], tokenCache);
+        assert.strictEqual(agTok, 'ag-token');
+        assert.strictEqual(codexTok, 'codex-token');
+        assert.strictEqual(orTok, 'or-token');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

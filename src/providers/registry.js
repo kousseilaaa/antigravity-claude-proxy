@@ -362,6 +362,47 @@ export function getAccountProtocol(account) {
     return provider?.protocol || PROTOCOLS.ANTIGRAVITY;
 }
 
+/**
+ * Build a provider-scoped unique account identifier so the same email can be
+ * connected across multiple providers simultaneously without colliding in
+ * accounts.json, tokenCache, rate-limits, trackers, or WebUI routes.
+ *
+ * - For 'antigravity' (default): preserves raw email for full backwards compatibility.
+ * - For all other providers: prefixes with `<providerId>:` if not already prefixed.
+ *
+ * @param {string} providerId
+ * @param {string} email
+ * @returns {string}
+ */
+export function normalizeAccountEmail(providerId, email) {
+    const cleanProvider = providerId || DEFAULT_PROVIDER;
+    const cleanEmail = String(email || '').trim();
+    if (!cleanEmail) return cleanEmail;
+    if (cleanProvider === DEFAULT_PROVIDER) return cleanEmail;
+    const prefix = `${cleanProvider}:`;
+    return cleanEmail.startsWith(prefix) ? cleanEmail : `${prefix}${cleanEmail}`;
+}
+
+/**
+ * Strip the `<providerId>:` prefix from an account identifier for human display.
+ * @param {string} email
+ * @param {string|null} [providerId]
+ * @returns {string}
+ */
+export function stripProviderPrefix(email, providerId = null) {
+    const cleanEmail = String(email || '').trim();
+    if (!cleanEmail) return cleanEmail;
+    if (providerId && providerId !== DEFAULT_PROVIDER) {
+        const prefix = `${providerId}:`;
+        if (cleanEmail.startsWith(prefix)) return cleanEmail.slice(prefix.length);
+    }
+    const idx = cleanEmail.indexOf(':');
+    if (idx > 0 && PROVIDERS[cleanEmail.slice(0, idx)]) {
+        return cleanEmail.slice(idx + 1);
+    }
+    return cleanEmail;
+}
+
 export default {
     AUTH_TYPES,
     PROTOCOLS,
@@ -373,5 +414,7 @@ export default {
     listProviders,
     parseModelIdentifier,
     getAccountBaseUrl,
-    getAccountProtocol
+    getAccountProtocol,
+    normalizeAccountEmail,
+    stripProviderPrefix
 };

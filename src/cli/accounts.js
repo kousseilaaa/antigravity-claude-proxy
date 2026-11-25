@@ -33,6 +33,8 @@ import {
     getProvider,
     AUTH_TYPES,
     DEFAULT_PROVIDER,
+    normalizeAccountEmail,
+    stripProviderPrefix,
     getCodexAuthorizationUrl,
     startCodexCallbackServer,
     exchangeCodexCode,
@@ -199,7 +201,7 @@ function displayAccounts(accounts) {
         );
         const provider = acc.provider || DEFAULT_PROVIDER;
         const status = hasActiveLimit ? ' (rate-limited)' : '';
-        console.log(`  ${i + 1}. [${provider}] ${acc.email}${status}`);
+        console.log(`  ${i + 1}. [${provider}] ${stripProviderPrefix(acc.email, provider)}${status}`);
     });
 }
 
@@ -231,7 +233,7 @@ async function addAccount(existingAccounts) {
         const result = await completeOAuthFlow(code, verifier);
 
         // Check if account already exists
-        const existing = existingAccounts.find(a => a.email === result.email);
+        const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === DEFAULT_PROVIDER && a.email === result.email);
         if (existing) {
             console.log(`\n⚠ Account ${result.email} already exists. Updating tokens.`);
             existing.refreshToken = result.refreshToken;
@@ -286,7 +288,7 @@ async function addAccountNoBrowser(existingAccounts, rl) {
         const result = await completeOAuthFlow(code, verifier);
 
         // Check if account already exists
-        const existing = existingAccounts.find(a => a.email === result.email);
+        const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === DEFAULT_PROVIDER && a.email === result.email);
         if (existing) {
             console.log(`\n⚠ Account ${result.email} already exists. Updating tokens.`);
             existing.refreshToken = result.refreshToken;
@@ -335,9 +337,11 @@ async function addOpenAICodexAccount(existingAccounts, rl, noBrowser = false) {
         }
 
         const data = await exchangeCodexCode(code, verifier);
-        const existing = existingAccounts.find(a => a.email === data.email);
+        const accountEmail = normalizeAccountEmail('openai-codex', data.email);
+        const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === 'openai-codex' && normalizeAccountEmail('openai-codex', a.email) === accountEmail);
         if (existing) {
-            console.log(`\n⚠ Account ${data.email} already exists. Updating tokens.`);
+            console.log(`\n⚠ OpenAI Codex account ${data.email} already exists. Updating tokens.`);
+            existing.email = accountEmail;
             existing.provider = 'openai-codex';
             existing.accessToken = data.accessToken;
             existing.refreshToken = data.refreshToken;
@@ -347,7 +351,7 @@ async function addOpenAICodexAccount(existingAccounts, rl, noBrowser = false) {
         }
         console.log(`\n✓ Connected OpenAI Codex account: ${data.email}`);
         return {
-            email: data.email,
+            email: accountEmail,
             provider: 'openai-codex',
             label: 'OpenAI Codex',
             source: 'oauth',
@@ -383,8 +387,10 @@ async function addGitHubCopilotAccount(existingAccounts) {
             const poll = await pollCopilotDeviceFlowOnce(flow.deviceCode);
             if (poll.status === 'complete' && poll.accessToken) {
                 const user = await getGitHubUser(poll.accessToken);
-                const existing = existingAccounts.find(a => a.email === user.email);
+                const accountEmail = normalizeAccountEmail('github-copilot', user.email);
+                const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === 'github-copilot' && normalizeAccountEmail('github-copilot', a.email) === accountEmail);
                 if (existing) {
+                    existing.email = accountEmail;
                     existing.provider = 'github-copilot';
                     existing.refreshToken = poll.accessToken;
                     console.log(`\n✓ Updated GitHub Copilot account: ${user.email}`);
@@ -392,7 +398,7 @@ async function addGitHubCopilotAccount(existingAccounts) {
                 }
                 console.log(`\n✓ Connected GitHub Copilot account: ${user.email}`);
                 return {
-                    email: user.email,
+                    email: accountEmail,
                     provider: 'github-copilot',
                     label: `Copilot (${user.login})`,
                     source: 'oauth',
@@ -442,8 +448,9 @@ async function addApiKeyAccount(providerId, existingAccounts, rl) {
     const modelsRaw = (await rl.question('Custom model IDs (comma-separated, optional): ')).trim();
     const customModels = modelsRaw ? modelsRaw.split(',').map(m => m.trim()).filter(Boolean) : [];
 
-    const email = label ? `${label}@${providerId}` : `${providerId}-${Date.now().toString(36)}@api-key`;
-    const existing = existingAccounts.find(a => a.email === email);
+    const rawEmail = label ? `${label}@${providerId}` : `${providerId}-${Date.now().toString(36)}@api-key`;
+    const email = normalizeAccountEmail(providerId, rawEmail);
+    const existing = existingAccounts.find(a => (a.provider || DEFAULT_PROVIDER) === providerId && normalizeAccountEmail(providerId, a.email) === email);
     if (existing) {
         existing.apiKey = apiKey;
         existing.baseUrl = baseUrl || undefined;

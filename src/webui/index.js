@@ -27,6 +27,7 @@ import {
     getProvider,
     AUTH_TYPES,
     DEFAULT_PROVIDER,
+    normalizeAccountEmail,
     testProviderAccount,
     getCodexAuthorizationUrl,
     startCodexCallbackServer,
@@ -87,19 +88,30 @@ async function removeAccount(email) {
 async function addAccount(accountData) {
     const { accounts, settings, activeIndex } = await loadAccounts(ACCOUNT_CONFIG_PATH);
 
-    // Check if account already exists
-    const existingIndex = accounts.findIndex(a => a.email === accountData.email);
+    const provider = accountData.provider || DEFAULT_PROVIDER;
+    const normalizedEmail = normalizeAccountEmail(provider, accountData.email);
+    const normalizedData = {
+        ...accountData,
+        provider,
+        email: normalizedEmail
+    };
+
+    // Deduplicate by (provider, normalizedEmail) so the same email can exist on multiple providers
+    const existingIndex = accounts.findIndex(a =>
+        (a.provider || DEFAULT_PROVIDER) === provider &&
+        normalizeAccountEmail(a.provider || DEFAULT_PROVIDER, a.email) === normalizedEmail
+    );
     if (existingIndex !== -1) {
         // Update existing account
         accounts[existingIndex] = {
             ...accounts[existingIndex],
-            ...accountData,
+            ...normalizedData,
             enabled: true,
             isInvalid: false,
             invalidReason: null,
             addedAt: accounts[existingIndex].addedAt || new Date().toISOString()
         };
-        logger.info(`[WebUI] Account ${accountData.email} updated`);
+        logger.info(`[WebUI] Account ${normalizedEmail} updated`);
     } else {
         // Check MAX_ACCOUNTS limit before adding new account
         if (accounts.length >= MAX_ACCOUNTS) {
@@ -107,7 +119,7 @@ async function addAccount(accountData) {
         }
         // Add new account
         accounts.push({
-            ...accountData,
+            ...normalizedData,
             enabled: true,
             isInvalid: false,
             invalidReason: null,
@@ -115,7 +127,7 @@ async function addAccount(accountData) {
             lastUsed: null,
             addedAt: new Date().toISOString()
         });
-        logger.info(`[WebUI] Account ${accountData.email} added`);
+        logger.info(`[WebUI] Account ${normalizedEmail} added`);
     }
 
     await saveAccounts(ACCOUNT_CONFIG_PATH, accounts, settings, activeIndex);
@@ -536,13 +548,14 @@ export function mountWebUI(app, dirname, accountManager) {
                         continue;
                     }
 
-                    // Check if account already exists
-                    const exists = existingEmails.has(acc.email);
+                    // Check if account already exists (scoped by provider)
+                    const provider = acc.provider || DEFAULT_PROVIDER;
+                    const normalizedEmail = normalizeAccountEmail(provider, acc.email);
+                    const exists = existingEmails.has(normalizedEmail);
 
                     // Add account
-                    const provider = acc.provider || DEFAULT_PROVIDER;
                     await addAccount({
-                        email: acc.email,
+                        email: normalizedEmail,
                         provider,
                         label: acc.label || undefined,
                         baseUrl: acc.base_url || acc.baseUrl || undefined,
@@ -1310,9 +1323,9 @@ export function mountWebUI(app, dirname, accountManager) {
             }
 
             const cleanLabel = (label || '').trim();
-            const accountEmail = (email || '').trim() ||
+            const rawEmail = (email || '').trim() ||
                 (cleanLabel ? `${cleanLabel}@${providerId}` : `${providerId}-${Date.now().toString(36)}@api-key`);
-
+            const accountEmail = normalizeAccountEmail(providerId, rawEmail);
             const parsedModels = Array.isArray(customModels)
                 ? customModels.map(m => String(m).trim()).filter(Boolean)
                 : (typeof customModels === 'string'

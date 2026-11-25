@@ -41,16 +41,19 @@ window.Components.accountManager = () => ({
     },
 
     formatEmail(email) {
-        if (!email || email.length <= 40) return email;
+        if (!email) return email;
+        // Strip leading `<provider>:` key prefix for cleaner display (provider badge is shown alongside)
+        const display = email.replace(/^[a-z0-9-]+:/, '');
+        if (display.length <= 40) return display;
 
-        const [user, domain] = email.split('@');
-        if (!domain) return email;
+        const [user, domain] = display.split('@');
+        if (!domain) return display;
 
         // Preserve domain integrity, truncate username if needed
         if (user.length > 20) {
             return `${user.substring(0, 10)}...${user.slice(-5)}@${domain}`;
         }
-        return email;
+        return display;
     },
 
     async refreshAccount(email) {

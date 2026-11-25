@@ -10,6 +10,7 @@ import { dirname } from 'path';
 import { ACCOUNT_CONFIG_PATH } from '../constants.js';
 import { getAuthStatus } from '../auth/database.js';
 import { logger } from '../utils/logger.js';
+import { normalizeAccountEmail } from '../providers/registry.js';
 
 let writeLock = null;
 
@@ -26,9 +27,12 @@ export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
         const configData = await readFile(configPath, 'utf-8');
         const config = JSON.parse(configData);
 
-        const accounts = (config.accounts || []).map(acc => ({
+        const accounts = (config.accounts || []).map(acc => {
+            const provider = acc.provider || 'antigravity';
+            return {
             ...acc,
-            provider: acc.provider || 'antigravity',
+            email: normalizeAccountEmail(provider, acc.email),
+            provider,
             label: acc.label || null,
             baseUrl: acc.baseUrl || null,
             protocol: acc.protocol || null,
@@ -48,7 +52,8 @@ export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
             // Quota threshold settings (per-account and per-model overrides)
             quotaThreshold: acc.quotaThreshold,  // undefined means use global
             modelQuotaThresholds: acc.modelQuotaThresholds || {}
-        }));
+        };
+        });
 
         const settings = config.settings || {};
         let activeIndex = config.activeIndex || 0;
@@ -131,9 +136,11 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
         await mkdir(dir, { recursive: true });
 
         const config = {
-            accounts: accounts.map(acc => ({
-                email: acc.email,
-                provider: acc.provider || 'antigravity',
+            accounts: accounts.map(acc => {
+                const provider = acc.provider || 'antigravity';
+                return {
+                email: normalizeAccountEmail(provider, acc.email),
+                provider,
                 label: acc.label || undefined,
                 source: acc.source,
                 enabled: acc.enabled !== false,
@@ -157,7 +164,8 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
                 quota: acc.quota || { models: {}, lastChecked: null },
                 quotaThreshold: acc.quotaThreshold,
                 modelQuotaThresholds: Object.keys(acc.modelQuotaThresholds || {}).length > 0 ? acc.modelQuotaThresholds : undefined
-            })),
+                };
+            }),
             settings: settings,
             activeIndex: activeIndex
         };
