@@ -341,6 +341,14 @@ document.addEventListener('alpine:init', () => {
                     hidden: !!isHidden, // Use computed visibility
                     activeCount: quotaInfo.filter(q => q.pct > 0).length,
                     effectiveThresholdPct: Math.round(maxEffectiveThreshold * 100),
+                    hasSystemPrompt: config.systemPromptEnabled !== false && (
+                        !!(config.systemPrompt && config.systemPrompt.trim()) ||
+                        !!(config.agentsFilePath && config.agentsFilePath.trim())
+                    ),
+                    hasAgentsFile: !!(config.agentsFilePath && config.agentsFilePath.trim()),
+                    systemPrompt: config.systemPrompt || '',
+                    agentsFilePath: config.agentsFilePath || '',
+                    systemPromptEnabled: config.systemPromptEnabled !== false,
                     hasVariedThresholds
                 });
             });

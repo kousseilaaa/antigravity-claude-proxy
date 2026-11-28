@@ -20,6 +20,7 @@ import { AccountManager } from './account-manager/index.js';
 import { clearAllSignatureCaches } from './format/signature-cache.js';
 import { formatDuration } from './utils/helpers.js';
 import { logger } from './utils/logger.js';
+import { resolveModelSystemPrompt, appendSystemPrompt } from './utils/system-prompt-injector.js';
 import usageStats from './modules/usage-stats.js';
 import {
     DEFAULT_PROVIDER,
@@ -871,13 +872,23 @@ app.post('/v1/messages', async (req, res) => {
         if (messages.length === 1 && messages[0].content === 'count') {
             return res.json({});
         }
+        const injectedPrompt = resolveModelSystemPrompt(modelMapping, {
+            requestedModel: model,
+            resolvedModel: modelId
+        });
+        const effectiveSystem = injectedPrompt
+            ? appendSystemPrompt(system, injectedPrompt.text)
+            : system;
+        if (injectedPrompt) {
+            logger.info(`[API] Appended global system prompt / AGENTS.md for ${injectedPrompt.sourceModel} (${injectedPrompt.text.length} chars)`);
+        }
 
         const request = {
             model: modelId,
             messages,
             max_tokens: max_tokens || 4096,
             stream,
-            system,
+            system: effectiveSystem,
             tools,
             tool_choice,
             thinking,

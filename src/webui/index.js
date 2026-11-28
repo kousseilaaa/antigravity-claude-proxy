@@ -23,6 +23,7 @@ import { logger } from '../utils/logger.js';
 import { getAuthorizationUrl, completeOAuthFlow, startCallbackServer } from '../auth/oauth.js';
 import { loadAccounts, saveAccounts } from '../account-manager/storage.js';
 import { getPackageVersion } from '../utils/helpers.js';
+import { readAgentsFile } from '../utils/system-prompt-injector.js';
 import {
     listProviders,
     getProvider,
@@ -1093,6 +1094,38 @@ export function mountWebUI(app, dirname, accountManager) {
             } else {
                 throw new Error('Failed to save configuration');
             }
+        } catch (error) {
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/models/prompt-preview - Verify and preview an AGENTS.md file path
+     */
+    app.post('/api/models/prompt-preview', (req, res) => {
+        try {
+            const { agentsFilePath } = req.body || {};
+            if (!agentsFilePath || typeof agentsFilePath !== 'string' || !agentsFilePath.trim()) {
+                return res.status(400).json({ status: 'error', error: 'File path is required' });
+            }
+
+            const result = readAgentsFile(agentsFilePath);
+            if (result.error) {
+                return res.status(400).json({
+                    status: 'error',
+                    error: result.error,
+                    resolvedPath: result.resolvedPath
+                });
+            }
+
+            const text = result.content || '';
+            res.json({
+                status: 'ok',
+                resolvedPath: result.resolvedPath,
+                chars: text.length,
+                lines: text ? text.split(/\r?\n/).length : 0,
+                preview: text.slice(0, 400)
+            });
         } catch (error) {
             res.status(500).json({ status: 'error', error: error.message });
         }

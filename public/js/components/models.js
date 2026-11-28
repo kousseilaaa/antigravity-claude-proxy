@@ -33,6 +33,17 @@ window.Components.models = () => ({
         originalPct: 0
     },
 
+    promptModal: {
+        open: false,
+        modelId: '',
+        agentsFilePath: '',
+        systemPrompt: '',
+        systemPromptEnabled: true,
+        saving: false,
+        previewLoading: false,
+        previewStatus: null,
+        previewError: null
+    },
     expandedModels: new Set(),
 
     isExpanded(modelId) {
@@ -297,5 +308,85 @@ window.Components.models = () => ({
      */
     async updateModelConfig(modelId, configUpdates) {
         return window.ModelConfigUtils.updateModelConfig(modelId, configUpdates);
+    },
+
+    openPromptModal(row) {
+        this.promptModal = {
+            open: true,
+            modelId: row.modelId,
+            agentsFilePath: row.agentsFilePath || '',
+            systemPrompt: row.systemPrompt || '',
+            systemPromptEnabled: row.systemPromptEnabled !== false,
+            saving: false,
+            previewLoading: false,
+            previewStatus: null,
+            previewError: null
+        };
+    },
+
+    closePromptModal() {
+        this.promptModal.open = false;
+    },
+
+    async previewAgentsFile() {
+        const filePath = (this.promptModal.agentsFilePath || '').trim();
+        this.promptModal.previewStatus = null;
+        this.promptModal.previewError = null;
+        if (!filePath) {
+            this.promptModal.previewError = 'Enter a file path first.';
+            return;
+        }
+
+        this.promptModal.previewLoading = true;
+        try {
+            const store = Alpine.store('global');
+            const { response, newPassword } = await window.utils.request('/api/models/prompt-preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agentsFilePath: filePath })
+            }, store.webuiPassword);
+
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json();
+            if (!response.ok || data.status === 'error') {
+                this.promptModal.previewError = data.error || 'Could not read file.';
+            } else {
+                this.promptModal.previewStatus = `${data.resolvedPath} (${data.lines} lines, ${data.chars} chars)`;
+            }
+        } catch (err) {
+            this.promptModal.previewError = err.message || 'Preview failed.';
+        } finally {
+            this.promptModal.previewLoading = false;
+        }
+    },
+
+    async savePromptConfig() {
+        if (!this.promptModal.modelId || this.promptModal.saving) return;
+        this.promptModal.saving = true;
+        try {
+            await this.updateModelConfig(this.promptModal.modelId, {
+                agentsFilePath: (this.promptModal.agentsFilePath || '').trim(),
+                systemPrompt: this.promptModal.systemPrompt || '',
+                systemPromptEnabled: !!this.promptModal.systemPromptEnabled
+            });
+            this.closePromptModal();
+        } finally {
+            this.promptModal.saving = false;
+        }
+    },
+
+    async clearPromptConfig() {
+        if (!this.promptModal.modelId || this.promptModal.saving) return;
+        this.promptModal.saving = true;
+        try {
+            await this.updateModelConfig(this.promptModal.modelId, {
+                agentsFilePath: '',
+                systemPrompt: '',
+                systemPromptEnabled: true
+            });
+            this.closePromptModal();
+        } finally {
+            this.promptModal.saving = false;
+        }
     }
 });
